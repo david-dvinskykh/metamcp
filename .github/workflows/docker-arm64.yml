@@ -112,6 +112,7 @@ jobs:
       - name: Smoke test published image
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          METAMCP_BASE: ${{ inputs.metamcp_base || 'source' }}
         run: |
           set -euxo pipefail
           # Освобождаем место под docker pull: слепок сборки уже уехал в gha-кэш.
@@ -135,7 +136,20 @@ jobs:
             test -f /app/docker-entrypoint.sh
             test -d /app/apps/frontend/.next
             test -d /app/apps/backend/dist
+            test -d /app/apps/frontend/node_modules
           '
+
+          # Патч таймаута прокси Next.js живёт в node_modules, который pnpm
+          # в рантайм-стадии может пересобрать. Проверяем, что 600000 доехало
+          # до образа, иначе регрессия проходит незаметно.
+          if [ "$METAMCP_BASE" = "source" ]; then
+            docker run --rm --entrypoint /bin/sh "$IMAGE" -euxc '
+              for f in /app/node_modules/.pnpm/next@*/node_modules/next/dist/server/lib/router-utils/proxy-request.js \
+                       /app/node_modules/.pnpm/next@*/node_modules/next/dist/esm/server/lib/router-utils/proxy-request.js; do
+                grep -q 600000 "$f"
+              done
+            '
+          fi
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v2

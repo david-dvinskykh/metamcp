@@ -82,25 +82,6 @@ RUN set -eux; \
 RUN pnpm install --frozen-lockfile
 RUN pnpm build
 
-# --- ПАТЧ NEXT ------------------------------------------------------------
-# Апстрим поднимает таймаут прокси Next.js с 30 с до 600 с — без этого длинные
-# вызовы MCP обрываются. Но путь захардкожен под react 19.1.2:
-#
-#   node_modules/.pnpm/next@15.5.12_react-dom@19.1.2_react@19.1.2__react@19.1.2/...
-#
-# В ветке ai-dev lock-файл уехал на react 19.2.4, каталог называется иначе,
-# и `sed -i` падает на несуществующем файле — сборка апстримного Dockerfile
-# на этой ветке ломается именно здесь (проверено 2026-07-27).
-RUN set -eux; \
-    found=0; \
-    for f in $(find node_modules/.pnpm -type f \
-                 -path '*/node_modules/next/dist/*server/lib/router-utils/proxy-request.js'); do \
-      sed -i -e "s/30000/600000/" "$f"; \
-      found=$((found + 1)); \
-    done; \
-    echo "patched proxy-request.js: ${found}"; \
-    [ "${found}" -ge 2 ] || { echo "ожидалось >=2 файла, найдено ${found}" >&2; exit 1; }
-
 # ===========================================================================
 # metamcp-source — runtime-слой MetaMCP, собранный из исходников
 # ===========================================================================
@@ -130,11 +111,45 @@ COPY --from=metamcp-builder --chown=nextjs:nodejs /app/packages                 
 COPY --from=metamcp-builder --chown=nextjs:nodejs /app/node_modules               ./node_modules
 COPY --from=metamcp-builder --chown=nextjs:nodejs /app/package.json               ./
 COPY --from=metamcp-builder --chown=nextjs:nodejs /app/pnpm-workspace.yaml        ./
+# Лок-файл нужен здесь, а не только в билдере: без него pnpm не может выкинуть
+# dev-зависимости из готового node_modules «на месте» и уходит в полную
+# переустановку с неизвестно какими версиями.
+COPY --from=metamcp-builder --chown=nextjs:nodejs /app/pnpm-lock.yaml             ./
 COPY --from=metamcp-builder --chown=nextjs:nodejs /app/docker-entrypoint.sh       ./
 
-RUN pnpm install --prod
-RUN cd apps/backend && pnpm add drizzle-kit@0.31.1
+# CI=true обязателен. node_modules приехал из билдера со всеми dev-зависимостями,
+# а тут ставится только prod — состав пакетов не сходится с .modules.yaml, pnpm
+# решает пересоздать каталог и спрашивает подтверждения. В docker build нет TTY,
+# и без CI=true установка падает с ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY.
+# --frozen-lockfile гарантирует, что и при пересоздании каталога версии
+# останутся ровно те, с которыми собирали.
+RUN CI=true pnpm install --prod --frozen-lockfile
+RUN cd apps/backend && CI=true pnpm add drizzle-kit@0.31.1
 RUN chmod +x docker-entrypoint.sh
+
+# --- ПАТЧ NEXT ------------------------------------------------------------
+# Апстрим поднимает таймаут прокси Next.js с 30 с до 600 с — без этого длинные
+# вызовы MCP обрываются. Но путь захардкожен под react 19.1.2:
+#
+#   node_modules/.pnpm/next@15.5.12_react-dom@19.1.2_react@19.1.2__react@19.1.2/...
+#
+# В ветке ai-dev lock-файл уехал на react 19.2.4, каталог называется иначе,
+# и `sed -i` падает на несуществующем файле — сборка апстримного Dockerfile
+# на этой ветке ломается именно здесь (проверено 2026-07-27).
+#
+# Патчим ПОСЛЕ pnpm install/add, а не в билдере: обе команды выше могут
+# пересоздать node_modules и распаковать next из стора заново. Пропатченный
+# в билдере файл при этом молча заменяется на исходный, сборка остаётся
+# зелёной, а таймаут возвращается к 30 с.
+RUN set -eux; \
+    found=0; \
+    for f in $(find node_modules/.pnpm -type f \
+                 -path '*/node_modules/next/dist/*server/lib/router-utils/proxy-request.js'); do \
+      sed -i -e "s/30000/600000/" "$f"; \
+      found=$((found + 1)); \
+    done; \
+    echo "patched proxy-request.js: ${found}"; \
+    [ "${found}" -ge 2 ] || { echo "ожидалось >=2 файла, найдено ${found}" >&2; exit 1; }
 
 # ===========================================================================
 # metamcp-prebuilt — тот же runtime-слой, но из готового образа
