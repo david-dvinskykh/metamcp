@@ -137,6 +137,8 @@ jobs:
             test -d /app/apps/frontend/.next
             test -d /app/apps/backend/dist
             test -d /app/apps/frontend/node_modules
+            # docker-entrypoint.sh гоняет миграции ровно так же
+            cd /app/apps/backend && pnpm exec drizzle-kit --version
           '
 
           # Патч таймаута прокси Next.js живёт в node_modules, который pnpm

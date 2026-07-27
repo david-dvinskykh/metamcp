@@ -82,6 +82,13 @@ RUN set -eux; \
 RUN pnpm install --frozen-lockfile
 RUN pnpm build
 
+# drizzle-kit нужен рантайму: docker-entrypoint.sh гоняет им миграции.
+# Ставим здесь, а не в рантайм-стадии, — там node_modules уже prod-only, а
+# `pnpm add` тянет ещё и dev-зависимости и падает с ERR_PNPM_INCLUDED_DEPS_CONFLICT.
+# После добавления пакет попадает в package.json бэкенда и в лок-файл, оба
+# уезжают в рантайм-стадию, и prod-установка подтягивает его сама.
+RUN cd apps/backend && pnpm add drizzle-kit@0.31.1
+
 # ===========================================================================
 # metamcp-source — runtime-слой MetaMCP, собранный из исходников
 # ===========================================================================
@@ -124,7 +131,6 @@ COPY --from=metamcp-builder --chown=nextjs:nodejs /app/docker-entrypoint.sh     
 # --frozen-lockfile гарантирует, что и при пересоздании каталога версии
 # останутся ровно те, с которыми собирали.
 RUN CI=true pnpm install --prod --frozen-lockfile
-RUN cd apps/backend && CI=true pnpm add drizzle-kit@0.31.1
 RUN chmod +x docker-entrypoint.sh
 
 # --- ПАТЧ NEXT ------------------------------------------------------------
