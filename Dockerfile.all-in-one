@@ -6,6 +6,7 @@
 #   mcp-instagram-dm   — npm-пакет, версия зафиксирована
 #   zenmoney-mcp       — npm-пакет zenmoney-mcp, версия зафиксирована
 #   zenmoney-mcp-ddvin — форк david-dvinskykh, сборка по package-lock.json
+#   one-zenwallet-mcp  — david-dvinskykh/one-zenwallet, каталог mcp-server
 #   portainer-mcp      — strnad/portainer-mcp v0.6.1, Go-бинарник из релизов
 #   metamcp-admin      — НЕ ВКЛЮЧЁН: репозиторий удалён с GitHub, см. блок ниже
 #
@@ -41,6 +42,10 @@ ARG TELEGRAM_MCP_COMMIT=7ea0adc8d0535e8dae02d07587d44321cca0db09
 ARG INSTAGRAM_DM_VERSION=2.1.1
 ARG ZENMONEY_NPM_VERSION=0.3.1
 ARG ZENMONEY_DDVIN_COMMIT=e565672de9d84d23789f730dce7d15be10688795
+
+# david-dvinskykh/one-zenwallet @ main на 2026-07-31 («Support running the MCP
+# server via npx»). Репозиторий активно движется, тегов нет — пин по коммиту.
+ARG ONE_ZENWALLET_COMMIT=3c555f57bf4c98dc7279611ffc82453cdb93f0d2
 
 ARG PORTAINER_MCP_VERSION=0.6.1
 
@@ -242,6 +247,62 @@ RUN set -eux; \
     rm -rf .git src test .github
 
 # ===========================================================================
+# one-zenwallet-builder — MCP-сервер из репозитория приложения one-zenwallet
+# ===========================================================================
+#
+# В npm пакета нет (registry отдаёт 404 на one-zenwallet-mcp), поэтому собираем
+# из git. Сам сервер лежит в подкаталоге mcp-server, но собирается скриптами
+# корневого package.json: `npm ci` ставит devDependencies и хук prepare гоняет
+# esbuild, который кладёт бандл в mcp-server/dist/server.js.
+#
+# --legacy-peer-deps обязателен: react 19 не проходит peer-диапазон
+# vite-plugin-pwa, и обычный `npm ci` падает на ERESOLVE. Их собственный CI
+# ставит зависимости так же.
+#
+FROM node:20-bookworm-slim AS one-zenwallet-builder
+
+ARG ONE_ZENWALLET_COMMIT
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates git; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin https://github.com/david-dvinskykh/one-zenwallet.git; \
+    git fetch -q --depth 1 origin "${ONE_ZENWALLET_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    test -f package-lock.json || { echo "нет package-lock.json — сборка недетерминирована" >&2; exit 1; }; \
+    npm ci --legacy-peer-deps; \
+    test -f mcp-server/dist/server.js
+
+# Бандл собран с --packages=external, наружу у него ровно два импорта:
+# @modelcontextprotocol/sdk и zod. Тащить в образ всё prod-дерево приложения
+# (257 МБ: react, react-router, vite-plugin-pwa, workbox) незачем — собираем
+# минимальную раскладку на 27 МБ.
+#
+# package.json из mcp-server копируется не для красоты: в нём "type": "module",
+# без него node прочитает ESM-бандл как CommonJS и упадёт на первом import.
+#
+# Версии берём из package-lock.json репозитория, иначе диапазоны ^ уедут при
+# следующей пересборке.
+RUN set -eux; \
+    mkdir -p /out; \
+    cp /src/mcp-server/package.json /out/; \
+    cp -r /src/mcp-server/dist /out/dist; \
+    grep -q '"type"[[:space:]]*:[[:space:]]*"module"' /out/package.json; \
+    sdk="$(node -p "require('/src/package-lock.json').packages['node_modules/@modelcontextprotocol/sdk'].version")"; \
+    zod="$(node -p "require('/src/package-lock.json').packages['node_modules/zod'].version")"; \
+    echo "sdk=${sdk} zod=${zod}"; \
+    cd /out; \
+    npm install --omit=dev --ignore-scripts --no-audit --no-fund --no-package-lock \
+      "@modelcontextprotocol/sdk@${sdk}" "zod@${zod}"; \
+    test -f /out/node_modules/zod/package.json; \
+    test -d /out/node_modules/@modelcontextprotocol/sdk
+
+# ===========================================================================
 # runner — итоговый образ поверх выбранного варианта MetaMCP
 # ===========================================================================
 #
@@ -259,7 +320,7 @@ USER root
 WORKDIR /app
 
 LABEL org.opencontainers.image.source="https://github.com/metatool-ai/metamcp"
-LABEL org.opencontainers.image.description="MetaMCP с предустановленными telegram, instagram, zenmoney и portainer MCP"
+LABEL org.opencontainers.image.description="MetaMCP с предустановленными telegram, instagram, zenmoney, one-zenwallet и portainer MCP"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="MetaMCP custom"
 
@@ -305,6 +366,9 @@ COPY --from=portainer-fetcher /tmp/portainer-mcp /usr/local/lib/portainer-mcp/po
 # --- zenmoney-mcp-ddvin (форк) --------------------------------------------
 COPY --from=zenmoney-ddvin-builder --chown=1001:1001 /src /usr/local/lib/zenmoney-mcp-ddvin
 
+# --- one-zenwallet-mcp ----------------------------------------------------
+COPY --from=one-zenwallet-builder --chown=1001:1001 /out /usr/local/lib/one-zenwallet-mcp
+
 # --- обёртки и записываемые каталоги --------------------------------------
 #
 # WORKDIR (/app) принадлежит root, а MCP-серверы запускаются от nextjs.
@@ -316,8 +380,8 @@ COPY --from=zenmoney-ddvin-builder --chown=1001:1001 /src /usr/local/lib/zenmone
 # в package.json. Иначе один затрёт другой.
 #
 RUN set -eux; \
-    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin; \
-    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin; \
+    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp; \
+    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp; \
     \
     printf '%s\n' \
       '#!/bin/sh' \
@@ -341,10 +405,19 @@ RUN set -eux; \
       'exec uv --directory /opt/telegram-mcp run --frozen --no-dev main.py "$@"' \
       > /usr/local/bin/telegram-mcp; \
     \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'export ONE_ZENWALLET_MCP_STATE_DIR="${ONE_ZENWALLET_MCP_STATE_DIR:-/var/lib/one-zenwallet-mcp}"' \
+      'cd /var/lib/one-zenwallet-mcp' \
+      'exec node /usr/local/lib/one-zenwallet-mcp/dist/server.js "$@"' \
+      > /usr/local/bin/one-zenwallet-mcp; \
+    \
     chmod 0755 \
       /usr/local/bin/portainer-mcp \
       /usr/local/bin/zenmoney-mcp-ddvin \
-      /usr/local/bin/telegram-mcp
+      /usr/local/bin/telegram-mcp \
+      /usr/local/bin/one-zenwallet-mcp
 
 # ===========================================================================
 # metamcp-admin-mcp — НЕ ВКЛЮЧЁН
@@ -374,7 +447,7 @@ USER nextjs
 
 EXPOSE 12008
 
-VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin"]
+VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp"]
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:12008/health || exit 1

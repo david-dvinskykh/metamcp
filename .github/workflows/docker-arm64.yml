@@ -128,6 +128,7 @@ jobs:
             command -v mcp-instagram-dm
             command -v zenmoney-mcp
             command -v zenmoney-mcp-ddvin
+            command -v one-zenwallet-mcp
             command -v portainer-mcp
             /usr/local/lib/portainer-mcp/portainer-mcp -h 2>&1 | grep -q -- "-disable-version-check"
             /opt/telegram-mcp/.venv/bin/python -c "import telethon, mcp; print(telethon.__version__)"
@@ -140,6 +141,17 @@ jobs:
             # docker-entrypoint.sh гоняет миграции ровно так же
             cd /app/apps/backend && pnpm exec drizzle-kit --version
           '
+
+          # one-zenwallet-mcp — ESM-бандл с внешними @modelcontextprotocol/sdk
+          # и zod. Проверка `command -v` тут ничего не значит: сервер падает уже
+          # на импортах, если рядом нет package.json с "type": "module" или не
+          # доедут зависимости. Поэтому гоняем настоящий MCP-handshake.
+          docker run --rm -i --entrypoint one-zenwallet-mcp "$IMAGE" > /tmp/ozw.out <<'JSONRPC' || true
+          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}
+          JSONRPC
+          head -c 300 /tmp/ozw.out
+          grep -q '"serverInfo"' /tmp/ozw.out
+          grep -q '"result"' /tmp/ozw.out
 
           # Патч таймаута прокси Next.js живёт в node_modules, который pnpm
           # в рантайм-стадии может пересобрать. Проверяем, что 600000 доехало
