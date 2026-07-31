@@ -368,11 +368,16 @@ RUN set -eux; \
 ENV UV_TOOL_DIR=/opt/uv-tools \
     UV_TOOL_BIN_DIR=/usr/local/bin
 
+# chown кэша в конце — ОБЯЗАТЕЛЬНО, а не гигиена. `uv tool install` идёт от
+# root и пишет в общий UV_CACHE_DIR, который лежит в /home/nextjs. Без возврата
+# владельца telegram-mcp, запускаемый от nextjs, падает на `uv run` с
+# "failed to symlink ... Permission denied (os error 13)" — ему не разложить
+# пакеты из root-овых каталогов кэша. Проверено на живом контейнере 2026-07-31.
 RUN set -eux; \
     uv tool install --python /usr/bin/python3 \
       --with "mcp[cli]<2.0" \
       "better-telegram-mcp==${BETTER_TELEGRAM_MCP_VERSION}"; \
-    chown -R nextjs:nodejs /opt/uv-tools; \
+    chown -R nextjs:nodejs /opt/uv-tools "${UV_CACHE_DIR}"; \
     command -v better-telegram-mcp; \
     py="$(ls -d /opt/uv-tools/*/bin/python | head -1)"; \
     test -n "${py}"; \
