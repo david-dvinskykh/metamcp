@@ -129,7 +129,13 @@ jobs:
             command -v zenmoney-mcp
             command -v zenmoney-mcp-ddvin
             command -v one-zenwallet-mcp
+            command -v better-telegram-mcp
             command -v portainer-mcp
+            # ровно та регрессия, из-за которой сервер и переехал в образ:
+            # mcp 2.0 убрал mcp.server.fastmcp, а пакет верхнюю границу не ставит
+            py=$(ls -d /opt/uv-tools/*/bin/python | head -1)
+            "$py" -c "import better_telegram_mcp, mcp.server.fastmcp"
+            "$py" -c "import importlib.metadata as m; v=m.version(\"mcp\"); assert int(v.split(\".\")[0]) < 2, v; print(\"mcp\", v)"
             /usr/local/lib/portainer-mcp/portainer-mcp -h 2>&1 | grep -q -- "-disable-version-check"
             /opt/telegram-mcp/.venv/bin/python -c "import telethon, mcp; print(telethon.__version__)"
             node /usr/local/lib/zenmoney-mcp-ddvin/build/index.js --help >/dev/null 2>&1 || true

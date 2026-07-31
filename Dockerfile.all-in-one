@@ -3,6 +3,7 @@
 #   metamcp            — metatool-ai/metamcp @ ai-dev (сборка из исходников)
 #                        либо готовый образ — переключается через METAMCP_BASE
 #   telegram-mcp       — chigwell/telegram-mcp (Python, uv sync по uv.lock)
+#   better-telegram-mcp— PyPI-пакет, ставится uv tool install, версия зафиксирована
 #   mcp-instagram-dm   — npm-пакет, версия зафиксирована
 #   zenmoney-mcp       — npm-пакет zenmoney-mcp, версия зафиксирована
 #   zenmoney-mcp-ddvin — форк david-dvinskykh, сборка по package-lock.json
@@ -38,6 +39,10 @@ ARG PNPM_VERSION=10.29.3
 # У ветки нет тегов и она активно движется — без пина пересборка молча меняет
 # версию сервера.
 ARG TELEGRAM_MCP_COMMIT=7ea0adc8d0535e8dae02d07587d44321cca0db09
+
+# n24q02m/better-telegram-mcp. Пакет требует ровно Python 3.13
+# (Requires-Python ==3.13.*) — системный python3 в trixie как раз 3.13.
+ARG BETTER_TELEGRAM_MCP_VERSION=4.17.0
 
 ARG INSTAGRAM_DM_VERSION=2.1.1
 ARG ZENMONEY_NPM_VERSION=0.3.1
@@ -313,6 +318,7 @@ RUN set -eux; \
 FROM metamcp-${METAMCP_BASE} AS runner
 
 ARG TELEGRAM_MCP_COMMIT
+ARG BETTER_TELEGRAM_MCP_VERSION
 ARG INSTAGRAM_DM_VERSION
 ARG ZENMONEY_NPM_VERSION
 
@@ -348,6 +354,30 @@ RUN set -eux; \
     test -f uv.lock; \
     uv sync --frozen --no-dev --python /usr/bin/python3; \
     chown -R nextjs:nodejs /opt/telegram-mcp /home/nextjs/.cache/uv
+
+# --- better-telegram-mcp --------------------------------------------------
+# Ставим в образ вместо `uvx better-telegram-mcp` в конфиге MetaMCP.
+#
+# uvx резолвит зависимости при каждом запуске с пустым кэшем — а кэш обнуляется
+# при любом пересоздании контейнера. 2026-07-31 это уронило сервер: вышел
+# mcp 2.0.0, где убран модуль mcp.server.fastmcp, а пакет требует всего лишь
+# mcp[cli]>=1.28.1, без верхней границы. Отсюда `--with "mcp[cli]<2.0"`.
+#
+# UV_TOOL_BIN_DIR=/usr/local/bin задан ещё в базовом образе uv, поэтому
+# консольная команда better-telegram-mcp сама оказывается в PATH.
+ENV UV_TOOL_DIR=/opt/uv-tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin
+
+RUN set -eux; \
+    uv tool install --python /usr/bin/python3 \
+      --with "mcp[cli]<2.0" \
+      "better-telegram-mcp==${BETTER_TELEGRAM_MCP_VERSION}"; \
+    chown -R nextjs:nodejs /opt/uv-tools; \
+    command -v better-telegram-mcp; \
+    py="$(ls -d /opt/uv-tools/*/bin/python | head -1)"; \
+    test -n "${py}"; \
+    "${py}" -c "import better_telegram_mcp, mcp.server.fastmcp"; \
+    "${py}" -c "import importlib.metadata as m; v=m.version('mcp'); assert int(v.split('.')[0]) < 2, v; print('mcp', v)"
 
 # --- npm-серверы ----------------------------------------------------------
 # Версии зафиксированы: `npm install -g <pkg>` без версии при каждой пересборке
