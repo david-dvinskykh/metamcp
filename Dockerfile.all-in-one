@@ -330,9 +330,15 @@ LABEL org.opencontainers.image.description="MetaMCP с предустановл�
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="MetaMCP custom"
 
-# python3 нужен для telegram-mcp. Ставим системный (в trixie это 3.13,
-# требование проекта — >=3.10) и запрещаем uv скачивать собственный:
-# скачанный под root интерпретатор недоступен процессу от nextjs.
+# python3 нужен для telegram-mcp. Ставим системный — в trixie это 3.13
+# (telegram-mcp требует >=3.10, better-telegram-mcp — ровно 3.13).
+#
+# Всем uv-командам ниже передаётся UV_PYTHON_DOWNLOADS=never, но именно
+# построчно, а не через ENV: сборка идёт от root, и скачанный ею интерпретатор
+# лёг бы в /root, недоступный процессу от nextjs. В рантайме запрет наоборот
+# вреден — MCP-серверу, добавленному через UI (`uvx ...`) и требующему другую
+# версию Python, нужно уметь её скачать. Каталог uv для этого есть и доступен
+# на запись: /home/nextjs/.local/share/uv/python.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends python3; \
@@ -340,8 +346,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 # --- telegram-mcp ---------------------------------------------------------
-ENV UV_CACHE_DIR=/home/nextjs/.cache/uv \
-    UV_PYTHON_DOWNLOADS=never
+ENV UV_CACHE_DIR=/home/nextjs/.cache/uv
 
 RUN set -eux; \
     mkdir -p /home/nextjs/.cache/uv; \
@@ -352,7 +357,7 @@ RUN set -eux; \
     git checkout -q FETCH_HEAD; \
     rm -rf .git tests screenshots; \
     test -f uv.lock; \
-    uv sync --frozen --no-dev --python /usr/bin/python3; \
+    UV_PYTHON_DOWNLOADS=never uv sync --frozen --no-dev --python /usr/bin/python3; \
     chown -R nextjs:nodejs /opt/telegram-mcp /home/nextjs/.cache/uv
 
 # --- better-telegram-mcp --------------------------------------------------
@@ -374,7 +379,7 @@ ENV UV_TOOL_DIR=/opt/uv-tools \
 # "failed to symlink ... Permission denied (os error 13)" — ему не разложить
 # пакеты из root-овых каталогов кэша. Проверено на живом контейнере 2026-07-31.
 RUN set -eux; \
-    uv tool install --python /usr/bin/python3 \
+    UV_PYTHON_DOWNLOADS=never uv tool install --python /usr/bin/python3 \
       --with "mcp[cli]<2.0" \
       "better-telegram-mcp==${BETTER_TELEGRAM_MCP_VERSION}"; \
     chown -R nextjs:nodejs /opt/uv-tools "${UV_CACHE_DIR}"; \

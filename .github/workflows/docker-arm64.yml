@@ -136,6 +136,10 @@ jobs:
             # ничто в кэше uv не должно принадлежать root: иначе uv run от
             # nextjs падает с "failed to symlink ... Permission denied"
             test -z "$(find /home/nextjs/.cache/uv ! -user nextjs -print -quit)"
+            # запрет на скачивание Python — только на время сборки; в рантайме
+            # uvx-серверу может понадобиться своя версия интерпретатора
+            test "${UV_PYTHON_DOWNLOADS:-unset}" != "never"
+            test -w "$HOME"
             py=$(ls -d /opt/uv-tools/*/bin/python | head -1)
             "$py" -c "import better_telegram_mcp, mcp.server.fastmcp"
             "$py" -c "import importlib.metadata as m; v=m.version(\"mcp\"); assert int(v.split(\".\")[0]) < 2, v; print(\"mcp\", v)"
