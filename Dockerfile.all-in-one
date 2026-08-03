@@ -46,7 +46,10 @@ ARG BETTER_TELEGRAM_MCP_VERSION=4.17.0
 
 ARG INSTAGRAM_DM_VERSION=2.1.1
 ARG ZENMONEY_NPM_VERSION=0.3.1
-ARG ZENMONEY_DDVIN_COMMIT=e565672de9d84d23789f730dce7d15be10688795
+# main @ 2026-07-31 «Never list deleted transactions (#3)». В npm пакет так и
+# не выложен (registry отдаёт пустой список версий), поэтому собираем из git,
+# а версия в package.json остаётся 0.4.0 — ориентироваться нужно на коммит.
+ARG ZENMONEY_DDVIN_COMMIT=cfd7ceac215ebd583af0bfb8dbe834ea7810b5c2
 
 # david-dvinskykh/one-zenwallet @ main на 2026-07-31 («Support running the MCP
 # server via npx»). Репозиторий активно движется, тегов нет — пин по коммиту.
