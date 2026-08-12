@@ -46,11 +46,12 @@ ARG BETTER_TELEGRAM_MCP_VERSION=4.17.0
 
 ARG INSTAGRAM_DM_VERSION=2.1.1
 ARG ZENMONEY_NPM_VERSION=0.3.1
-# main @ 2026-08-03, мерж PR #4 «Apply the write response diff so deletions are
-# not skipped». В npm пакет так и не выложен (registry отдаёт пустой список
-# версий), поэтому собираем из git. Версия в package.json не поднимается —
-# 0.4.0 уже на четырёх разных коммитах, так что идентификатор сборки только SHA.
-ARG ZENMONEY_DDVIN_COMMIT=9f6e1659d84282c52e3e33fef694396673a900bc
+# main @ 2026-08-12 «Add deletion tools for transactions and reference data»:
+# новые инструменты удаления (src/tools/delete.ts) и общий рендерер транзакций.
+# В npm пакет так и не выложен (registry отдаёт 404), поэтому собираем из git.
+# Версия в package.json не поднимается — 0.4.0 уже на пяти разных коммитах,
+# так что идентификатор сборки только SHA.
+ARG ZENMONEY_DDVIN_COMMIT=5a38cda538d73089411c7655b328c8f66ff7c357
 
 # david-dvinskykh/one-zenwallet @ main на 2026-07-31 («Support running the MCP
 # server via npx»). Репозиторий активно движется, тегов нет — пин по коммиту.
