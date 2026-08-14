@@ -6,6 +6,17 @@ name: Build and Push ARM64 image (all-in-one)
 # Раннер — ubuntu-24.04-arm, то есть сборка идёт нативно на aarch64.
 # Через QEMU этот образ собирать нельзя: `pnpm build` (Next.js) под эмуляцией
 # уходит за лимит времени job'а.
+#
+# Когда собирается:
+#   • любой пуш в дефолтную ветку (мердж ветки в ai-dev) — ВСЕГДА, чтобы тег
+#     latest, на который смотрит watchtower, гарантированно поехал вперёд;
+#   • пуш в claude/** — только если тронуты Dockerfile.all-in-one или сам
+#     воркфлоу, иначе каждый коммит в рабочую ветку запускал бы часовую сборку;
+#   • ручной запуск — всегда.
+#
+# Условие живёт в job'е changes, а не в фильтре paths триггера: paths один на
+# все ветки, и с ним мердж в ai-dev, не трогающий эти два файла, не собирал бы
+# ничего — latest молча оставался бы на предыдущем образе.
 
 on:
   workflow_dispatch:
@@ -25,9 +36,6 @@ on:
     branches:
       - ai-dev
       - "claude/**"
-    paths:
-      - "Dockerfile.all-in-one"
-      - ".github/workflows/docker-arm64.yml"
 
 env:
   REGISTRY: ghcr.io
@@ -38,7 +46,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Дешёвый (десятки секунд) страж перед часовой arm64-сборкой.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Нужна история: сравниваем состояние до и после пуша.
+          fetch-depth: 0
+
+      - name: Decide whether to build
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          decide() {
+            echo "$2"
+            echo "should_build=$1" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          [ "$EVENT" = "push" ] || decide true "событие $EVENT — собираем"
+
+          [ "$REF_NAME" != "$DEFAULT_BRANCH" ] \
+            || decide true "пуш в дефолтную ветку ($DEFAULT_BRANCH) — собираем всегда, иначе latest отстанет"
+
+          # Первый пуш ветки и force-push: BEFORE указывает в никуда
+          # (нули или уже недостижимый коммит) — сравнивать не с чем.
+          git cat-file -e "${BEFORE}^{commit}" 2>/dev/null \
+            || decide true "нет предыдущего коммита ($BEFORE) — собираем"
+
+          changed=$(git diff --name-only "$BEFORE" "$AFTER" -- \
+            Dockerfile.all-in-one .github/workflows/docker-arm64.yml)
+
+          [ -z "$changed" ] \
+            || decide true "изменилось: $changed"
+
+          decide false "ни Dockerfile.all-in-one, ни воркфлоу не тронуты — пропускаем сборку"
+
   build-and-push-arm64:
+    needs: changes
+    if: needs.changes.outputs.should_build == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     permissions:
