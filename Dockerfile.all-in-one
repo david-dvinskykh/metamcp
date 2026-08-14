@@ -9,6 +9,7 @@
 #   zenmoney-mcp-ddvin — форк david-dvinskykh, сборка по package-lock.json
 #   one-zenwallet-mcp  — david-dvinskykh/one-zenwallet, каталог mcp-server
 #   portainer-mcp      — strnad/portainer-mcp v0.6.1, Go-бинарник из релизов
+#   lightpanda-mcp     — lightpanda-io/browser 0.3.6, встроенный MCP-режим
 #   metamcp-admin      — НЕ ВКЛЮЧЁН: репозиторий удалён с GitHub, см. блок ниже
 #
 # Контекст сборки не нужен — все исходники клонируются внутри.
@@ -58,6 +59,12 @@ ARG ZENMONEY_DDVIN_COMMIT=289e7f4125b151115d47d471b1e8777b89d36e07
 ARG ONE_ZENWALLET_COMMIT=3c555f57bf4c98dc7279611ffc82453cdb93f0d2
 
 ARG PORTAINER_MCP_VERSION=0.6.1
+
+# lightpanda-io/browser — безголовый браузер на Zig со встроенным MCP-сервером
+# (`lightpanda mcp`, stdio по умолчанию). 0.3.6 @ 2026-07-25 — последний
+# нумерованный релиз; тег nightly брать нельзя, он переписывается и образ
+# перестаёт быть воспроизводимым.
+ARG LIGHTPANDA_VERSION=0.3.6
 
 # ===========================================================================
 # base — как в апстриме: uv + Node 20 + pnpm
@@ -226,6 +233,58 @@ RUN set -eux; \
     /tmp/portainer-mcp -h 2>&1 | grep -q -- '-disable-version-check'
 
 # ===========================================================================
+# lightpanda-fetcher — бинарник браузера с проверкой контрольной суммы
+# ===========================================================================
+#
+# Релиз отдаёт голый ELF без архива: lightpanda-<arch>-linux (~150 МБ).
+# Зависимостей у него всего две — libc и libm, обе есть в trixie
+# (бинарник требует GLIBC_2.34, в trixie 2.41).
+#
+FROM debian:trixie-slim AS lightpanda-fetcher
+
+ARG LIGHTPANDA_VERSION
+# TARGETARCH проставляет только BuildKit — см. комментарий в portainer-fetcher.
+ARG TARGETARCH=""
+
+# SHA256 бинарников релиза 0.3.6, проверены вручную 2026-08-14.
+ARG SHA256_AMD64=e438c0ad44e0f6916c14cf13beb003512c60438d8fd200738d2e596e73f652d6
+ARG SHA256_ARM64=29c059cd0755a195350cc79dbcf7ee9580fd575ec3eaa31db755dbada417e616
+
+# Запуск скачанного бинарника проверяем только при нативной сборке: при
+# кросс-сборке в файле чужой ELF и exec падает на «Exec format error».
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    rm -rf /var/lib/apt/lists/*; \
+    arch="${TARGETARCH}"; \
+    if [ -z "${arch}" ]; then \
+      case "$(uname -m)" in \
+        x86_64)  arch=amd64 ;; \
+        aarch64) arch=arm64 ;; \
+        *) echo "не удалось определить архитектуру: $(uname -m)" >&2; exit 1 ;; \
+      esac; \
+      echo "TARGETARCH пуст (сборка без BuildKit), определил по uname: ${arch}"; \
+    fi; \
+    case "${arch}" in \
+      amd64) sha="${SHA256_AMD64}"; asset=lightpanda-x86_64-linux ;; \
+      arm64) sha="${SHA256_ARM64}"; asset=lightpanda-aarch64-linux ;; \
+      *) echo "unsupported arch: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/lightpanda-io/browser/releases/download/${LIGHTPANDA_VERSION}/${asset}"; \
+    curl -fsSL --retry 3 --retry-delay 2 -o /tmp/lightpanda "${url}"; \
+    echo "${sha}  /tmp/lightpanda" | sha256sum -c -; \
+    chmod 0755 /tmp/lightpanda; \
+    host=""; \
+    case "$(uname -m)" in \
+      x86_64)  host=amd64 ;; \
+      aarch64) host=arm64 ;; \
+    esac; \
+    if [ "${host}" = "${arch}" ]; then \
+      test "$(/tmp/lightpanda version)" = "${LIGHTPANDA_VERSION}"; \
+      /tmp/lightpanda mcp --help 2>&1 | grep -q -- '--cdp-port'; \
+    fi
+
+# ===========================================================================
 # zenmoney-ddvin-builder — форк, сборка СТРОГО по package-lock.json
 # ===========================================================================
 #
@@ -331,7 +390,7 @@ USER root
 WORKDIR /app
 
 LABEL org.opencontainers.image.source="https://github.com/metatool-ai/metamcp"
-LABEL org.opencontainers.image.description="MetaMCP с предустановленными telegram, instagram, zenmoney, one-zenwallet и portainer MCP"
+LABEL org.opencontainers.image.description="MetaMCP с предустановленными telegram, instagram, zenmoney, one-zenwallet, portainer и lightpanda MCP"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="MetaMCP custom"
 
@@ -414,6 +473,9 @@ COPY --from=zenmoney-ddvin-builder --chown=1001:1001 /src /usr/local/lib/zenmone
 # --- one-zenwallet-mcp ----------------------------------------------------
 COPY --from=one-zenwallet-builder --chown=1001:1001 /out /usr/local/lib/one-zenwallet-mcp
 
+# --- lightpanda -----------------------------------------------------------
+COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpanda
+
 # --- обёртки и записываемые каталоги --------------------------------------
 #
 # WORKDIR (/app) принадлежит root, а MCP-серверы запускаются от nextjs.
@@ -424,9 +486,19 @@ COPY --from=one-zenwallet-builder --chown=1001:1001 /out /usr/local/lib/one-zenw
 # форк называется zenmoney-mcp-ddvin — ровно как его собственный bin
 # в package.json. Иначе один затрёт другой.
 #
+# lightpanda в MCP-режиме по умолчанию не пишет на диск, но каталог ему всё
+# равно нужен: с --http-cache-dir/--cookie-jar он пишет в текущую директорию,
+# а /app от nextjs недоступен на запись.
+#
+# LIGHTPANDA_DISABLE_TELEMETRY выставляется в обёртке, а не в ENV образа:
+# без него сервер на каждом запуске сыплет в stderr «telemetry ... flush
+# err=CouldntConnect» (стенд закрыт от исходящих соединений), а MetaMCP
+# показывает stderr stdio-сервера как ошибки. Значение перекрывается из
+# конфигурации сервера, если телеметрию захочется вернуть.
+#
 RUN set -eux; \
-    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp; \
-    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp; \
+    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda; \
+    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda; \
     \
     printf '%s\n' \
       '#!/bin/sh' \
@@ -458,11 +530,27 @@ RUN set -eux; \
       'exec node /usr/local/lib/one-zenwallet-mcp/dist/server.js "$@"' \
       > /usr/local/bin/one-zenwallet-mcp; \
     \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'export LIGHTPANDA_DISABLE_TELEMETRY="${LIGHTPANDA_DISABLE_TELEMETRY:-true}"' \
+      'cd /var/lib/lightpanda' \
+      'exec /usr/local/lib/lightpanda/lightpanda "$@"' \
+      > /usr/local/bin/lightpanda; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'exec /usr/local/bin/lightpanda mcp "$@"' \
+      > /usr/local/bin/lightpanda-mcp; \
+    \
     chmod 0755 \
       /usr/local/bin/portainer-mcp \
       /usr/local/bin/zenmoney-mcp-ddvin \
       /usr/local/bin/telegram-mcp \
-      /usr/local/bin/one-zenwallet-mcp
+      /usr/local/bin/one-zenwallet-mcp \
+      /usr/local/bin/lightpanda \
+      /usr/local/bin/lightpanda-mcp
 
 # ===========================================================================
 # metamcp-admin-mcp — НЕ ВКЛЮЧЁН
