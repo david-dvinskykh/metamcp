@@ -86,7 +86,7 @@ jobs:
             type=raw,value=${{ inputs.extra_tag }},enable=${{ inputs.extra_tag != '' }}
           labels: |
             org.opencontainers.image.title=MetaMCP custom (all-in-one, arm64)
-            org.opencontainers.image.description=MetaMCP с предустановленными telegram, instagram, zenmoney и portainer MCP
+            org.opencontainers.image.description=MetaMCP с предустановленными telegram, instagram, zenmoney, portainer и lightpanda MCP
 
       - name: Build and push arm64 image
         id: build
@@ -131,6 +131,11 @@ jobs:
             command -v one-zenwallet-mcp
             command -v better-telegram-mcp
             command -v portainer-mcp
+            command -v lightpanda
+            command -v lightpanda-mcp
+            # версия должна совпадать с LIGHTPANDA_VERSION: nightly-тег
+            # переписывается, и подмена релиза иначе прошла бы незаметно
+            test "$(lightpanda version)" = "0.3.6"
             # ровно та регрессия, из-за которой сервер и переехал в образ:
             # mcp 2.0 убрал mcp.server.fastmcp, а пакет верхнюю границу не ставит
             # ничто в кэше uv не должно принадлежать root: иначе uv run от
@@ -165,6 +170,22 @@ jobs:
           head -c 300 /tmp/ozw.out
           grep -q '"serverInfo"' /tmp/ozw.out
           grep -q '"result"' /tmp/ozw.out
+
+          # lightpanda-mcp — тот же случай: `command -v` не проверяет ни
+          # динамические зависимости бинарника (нужен GLIBC_2.34), ни то, что
+          # серверу хватает прав в /var/lib/lightpanda. Гоняем handshake и
+          # заодно проверяем, что stderr чист: обёртка гасит телеметрию, а её
+          # предупреждения MetaMCP показывает как ошибки сервера.
+          docker run --rm -i --entrypoint lightpanda-mcp "$IMAGE" > /tmp/lp.out 2> /tmp/lp.err <<'JSONRPC' || true
+          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}
+          {"jsonrpc":"2.0","method":"notifications/initialized"}
+          {"jsonrpc":"2.0","id":2,"method":"tools/list"}
+          JSONRPC
+          head -c 300 /tmp/lp.out
+          cat /tmp/lp.err
+          grep -q '"name":"lightpanda"' /tmp/lp.out
+          grep -q '"name":"markdown"' /tmp/lp.out
+          ! grep -q 'scope=telemetry' /tmp/lp.err
 
           # Патч таймаута прокси Next.js живёт в node_modules, который pnpm
           # в рантайм-стадии может пересобрать. Проверяем, что 600000 доехало
