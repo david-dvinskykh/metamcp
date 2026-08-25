@@ -57,6 +57,7 @@ English | [简体中文](./README_cn.md)
   - [🔧 API Key Auth Troubleshooting](#-api-key-auth-troubleshooting)
 - [❄️ Cold Start Problem and Custom Dockerfile](#️-cold-start-problem-and-custom-dockerfile)
 - [🧾 Log Levels](#-log-levels)
+- [📎 Direct File Transfers (Telegram → Google Drive, without burning tokens)](#-direct-file-transfers-telegram--google-drive-without-burning-tokens)
 - [🔐 Authentication](#-authentication)
 - [🚦 Traffic Management](#-traffic-management)
   - [🚧 **MCP Rate Limit**](#-mcp-rate-limit)
@@ -320,6 +321,133 @@ MetaMCP’s backend writes logs to files and optionally mirrors selected levels 
     LOG_LEVEL='errors-only' # 'all', 'info', 'errors-only', 'none'
     ```
   - `docker-compose.dev.yml` uses: `LOG_LEVEL: ${LOG_LEVEL:-all}`
+
+## 📎 Direct File Transfers (Telegram → Google Drive, without burning tokens)
+
+Moving a file between two MCP servers normally costs a fortune in tokens: the client calls
+`download_media`, the file comes back as base64 **inside the conversation**, and the client
+sends those same bytes back out to the upload tool. A 20 MB attachment is roughly 27 MB of
+base64 — tens of thousands of tokens, twice, for bytes no model ever needs to read.
+
+MetaMCP's built-in **file relay** does the copy inside the server instead. The bytes go
+`source → MetaMCP disk → destination` and never enter the context window; the client only
+sees a small JSON summary (name, MIME type, size, sha256, destination link).
+
+The relay is enabled by default and appears in every namespace as three tools:
+
+| Tool | What it does |
+| --- | --- |
+| `metamcp-files__transfer_file` | Source → destination in one call. This is the one you normally want. |
+| `metamcp-files__stage_file` | Pull the file into MetaMCP's staging area, return only its metadata + a handle. |
+| `metamcp-files__deliver_file` | Send a previously staged handle to a destination. |
+
+**Sources** (pick exactly one): `telegram` (a Bot API `file_id`), `tool` (any tool of the same
+namespace), `url` (any http(s) URL).
+**Destinations** (pick exactly one): `googleDrive` (native upload with the server's
+credentials), `tool` (any tool of the same namespace, with the payload injected as base64,
+a data URL or text).
+
+### 🚀 Telegram → Google Drive
+
+With `TELEGRAM_BOT_TOKEN` and Google Drive credentials configured, the whole transfer is a
+single call whose arguments contain no file data at all:
+
+```json
+{
+  "name": "metamcp-files__transfer_file",
+  "arguments": {
+    "source": { "telegram": { "fileId": "BQACAgIAAxkBAAI..." } },
+    "destination": { "googleDrive": { "folderId": "1AbC...", "fileName": "invoice.pdf" } }
+  }
+}
+```
+
+The reply is just:
+
+```json
+{
+  "ok": true,
+  "file": { "fileName": "invoice.pdf", "mimeType": "application/pdf", "size": 2317441, "sha256": "…" },
+  "destination": {
+    "kind": "googleDrive",
+    "googleDrive": { "id": "1XyZ…", "webViewLink": "https://drive.google.com/file/d/1XyZ…/view" }
+  },
+  "note": "2317441 bytes were relayed server-side and never entered the conversation."
+}
+```
+
+### 🔁 Any MCP tool → any MCP tool
+
+When the file lives behind an MCP server rather than the Bot API (a Telegram MCP server, an
+email server, a scraper), name the tool instead. The relay calls it, keeps the binary result
+server-side, and forwards it:
+
+```json
+{
+  "source": {
+    "tool": {
+      "name": "Telegram__download_media",
+      "arguments": { "chat_id": 123456, "message_id": 42 }
+    }
+  },
+  "destination": {
+    "tool": {
+      "name": "Google-Drive__create_file",
+      "contentArgument": "content",
+      "contentEncoding": "base64",
+      "arguments": { "name": "{{file.name}}", "parentId": "1AbC..." },
+      "mimeTypeArgument": "mimeType"
+    }
+  }
+}
+```
+
+The relay understands the usual ways servers return a file: `image` / `audio` content,
+`resource` blobs, `resource_link`s, data URLs, and JSON replies carrying a download URL. If
+auto-detection fails, point at the URL explicitly with `source.tool.urlPath`
+(e.g. `"result.file_url"`). `{{file.name}}`, `{{file.mimeType}}`, `{{file.size}}`,
+`{{file.sha256}}` and `{{env.ALLOWED_NAME}}` can be templated anywhere in the destination
+arguments, so secrets stay on the server too.
+
+Relayed calls go back through the normal middleware chain, so tool filtering, tool overrides
+and audit logging apply exactly as they would to a direct call.
+
+### ⚙️ Configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `FILE_RELAY_ENABLED` | `true` | Set to `false` to hide the relay tools entirely. |
+| `FILE_RELAY_MAX_BYTES` | `104857600` (100 MiB) | Hard size cap per transfer. |
+| `FILE_RELAY_STAGING_DIR` | `$TMPDIR/metamcp-file-relay` | Where in-flight files are written. |
+| `FILE_RELAY_TTL_MS` | `3600000` (1 h) | How long a staged file survives before being swept. |
+| `FILE_RELAY_ALLOWED_HOSTS` | *(empty = any public host)* | Comma-separated allow-list for `url` sources. |
+| `FILE_RELAY_ALLOW_PRIVATE_HOSTS` | `false` | Allow `url` sources to resolve to private/loopback addresses. |
+| `FILE_RELAY_SECRET_ENV` | *(empty)* | Env var names that may be used as `{{env.NAME}}`. |
+| `FILE_RELAY_LOCAL_PATH_ROOTS` | *(empty = disabled)* | Directories a source result may point into with a local path (useful for STDIO servers that save to disk). |
+| `FILE_RELAY_MAX_RESULT_TEXT_CHARS` | `2000` | Truncation budget for text echoed back from a destination tool. |
+| `TELEGRAM_BOT_TOKEN` | – | Enables `source.telegram`. |
+| `TELEGRAM_API_BASE` | `https://api.telegram.org` | Point at a self-hosted Bot API server. |
+| `GOOGLE_DRIVE_CLIENT_ID` / `GOOGLE_DRIVE_CLIENT_SECRET` / `GOOGLE_DRIVE_REFRESH_TOKEN` | – | Drive credentials (user OAuth). |
+| `GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON` | – | Drive credentials (service account, alternative to the above). |
+| `GOOGLE_DRIVE_SUBJECT` | – | User to impersonate with a domain-wide-delegation service account. |
+| `GOOGLE_DRIVE_DEFAULT_FOLDER_ID` | – | Folder used when a Drive destination does not name one. |
+
+Getting a Drive refresh token: create an OAuth client (Desktop app) in Google Cloud, enable
+the Drive API, and complete the consent flow once with the `https://www.googleapis.com/auth/drive.file`
+scope. `drive.file` only grants access to files the app itself created, which is the right
+scope for an upload bridge.
+
+### 🔒 Notes on safety
+
+- `url` sources are checked before every request and after every redirect: only http(s), never
+  loopback / RFC1918 / link-local addresses (cloud metadata included) unless
+  `FILE_RELAY_ALLOW_PRIVATE_HOSTS=true`, and optionally restricted to `FILE_RELAY_ALLOWED_HOSTS`.
+- `{{env.…}}` only resolves names listed in `FILE_RELAY_SECRET_ENV`, so a client cannot template
+  the database URL into an outbound request.
+- Local filesystem paths returned by a source tool are refused unless they resolve inside
+  `FILE_RELAY_LOCAL_PATH_ROOTS`.
+- Staged files live in a `0700` directory, are deleted as soon as delivery finishes, and expire
+  on a timer if a transfer is abandoned.
 
 ## 🔐 Authentication
 

@@ -34,6 +34,11 @@ import {
   isExposedAdminToolName,
 } from "../admin-mcp/tools-registry";
 import { configService } from "../config.service";
+import {
+  executeFileRelayTool,
+  getFileRelayToolsForMcp,
+  isFileRelayToolName,
+} from "../file-relay";
 import { ConnectedClient } from "./client";
 import { getMcpServers } from "./fetch-metamcp";
 import { extractForwardedHeaders, mergeHeaders } from "./header-forwarding";
@@ -673,6 +678,10 @@ export const createServer = async (
       result.tools.push(...getAdminToolsForMcp());
     }
 
+    // Built-in file relay: moves bytes between two servers of this namespace
+    // without routing them through the client's context window.
+    result.tools.push(...getFileRelayToolsForMcp());
+
     return result;
   });
 
@@ -689,6 +698,21 @@ export const createServer = async (
         request.params.name,
         adminContext.userId,
         request.params.arguments,
+      );
+    }
+
+    if (isFileRelayToolName(request.params.name)) {
+      // Relayed calls go back through the middleware chain, so tool filtering,
+      // overrides and audit logging apply to them exactly as they would to a
+      // direct call from the client.
+      return executeFileRelayTool(
+        request.params.name,
+        request.params.arguments,
+        (name, args) =>
+          callToolWithMiddleware(
+            { method: "tools/call", params: { name, arguments: args } },
+            handlerContext,
+          ),
       );
     }
 
