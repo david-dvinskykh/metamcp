@@ -1,0 +1,1864 @@
+From 6fb5fb4050aba76ee3d02a20e90ecdb592451eff Mon Sep 17 00:00:00 2001
+From: David Dvinskykh <david.dvinskykh@gmail.com>
+Date: Tue, 25 Aug 2026 12:59:53 +0000
+Subject: [PATCH] feat(messages): inline buttons on send/edit and a callbacks
+ action
+
+Answering a queued decision took a typed message ("12 yes"); now it takes one
+tap.
+
+- message(action="send"|"edit") accepts `buttons`: rows of {text, data} mapped
+  to the Bot API's inline_keyboard/callback_data. Validated before the request
+  goes out (callback_data 1-64 bytes UTF-8, <=8 buttons per row, <=100 rows);
+  on edit, buttons=[] strips the keyboard.
+- message(action="callbacks") drains taps via getUpdates(allowed_updates=
+  ["callback_query"]), answers each with answerCallbackQuery so the client's
+  spinner stops, and optionally removes the keyboard (strip_buttons) so a
+  question cannot be answered twice.
+- The update cursor lives server-side (TELEGRAM_DATA_DIR/callback_cursor.json,
+  keyed by bot id), so a repeated call never replays a tap the caller already
+  acted on. since_id overrides it when the caller tracks its own position.
+- TELEGRAM_ALLOWED_CALLBACK_SENDERS restricts who may tap the bot's buttons and
+  TELEGRAM_CALLBACK_DATA_PATTERN validates the payload; rejected taps are
+  logged, reported under "ignored", and never acknowledged.
+
+Inline keyboards are bot-mode only -- the user backend raises ModeError for
+buttons and for every callback method.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QEztxR4XvApFdJXxrX4mrM
+---
+ README.md                                     |   9 +-
+ src/better_telegram_mcp/backends/base.py      |  33 +++
+ .../backends/bot_backend.py                   |  57 ++++
+ .../backends/user_backend.py                  |  37 +++
+ src/better_telegram_mcp/callbacks.py          | 139 +++++++++
+ src/better_telegram_mcp/config.py             |  10 +
+ src/better_telegram_mcp/docs/messages.md      |  66 ++++-
+ src/better_telegram_mcp/server.py             |  47 ++-
+ src/better_telegram_mcp/tools/messages.py     | 178 ++++++++++-
+ src/better_telegram_mcp/utils/keyboard.py     |  91 ++++++
+ tests/conftest.py                             |  27 ++
+ tests/test_backends/test_bot_buttons.py       | 153 ++++++++++
+ tests/test_callbacks.py                       | 139 +++++++++
+ tests/test_tools/test_messages.py             |  11 +-
+ tests/test_tools/test_messages_callbacks.py   | 278 ++++++++++++++++++
+ tests/test_utils/test_keyboard.py             |  97 ++++++
+ 16 files changed, 1348 insertions(+), 24 deletions(-)
+ create mode 100644 src/better_telegram_mcp/callbacks.py
+ create mode 100644 src/better_telegram_mcp/utils/keyboard.py
+ create mode 100644 tests/test_backends/test_bot_buttons.py
+ create mode 100644 tests/test_callbacks.py
+ create mode 100644 tests/test_tools/test_messages_callbacks.py
+ create mode 100644 tests/test_utils/test_keyboard.py
+
+diff --git a/README.md b/README.md
+index d76a726..8cb8ef1 100644
+--- a/README.md
++++ b/README.md
+@@ -154,6 +154,13 @@ not env vars. Server-side env vars for self-hosting:
+ | `HOST` | No | `0.0.0.0` | Bind address |
+ | `PORT` | No | `8080` | HTTP port |
+ 
++**Inline-button callbacks (bot mode, optional):**
++
++| Variable | Required | Default | Description |
++|:---------|:---------|:--------|:------------|
++| `TELEGRAM_ALLOWED_CALLBACK_SENDERS` | No | -- | Comma-separated Telegram user IDs allowed to tap this bot's inline buttons. Empty accepts anyone, so set it whenever the buttons drive real actions |
++| `TELEGRAM_CALLBACK_DATA_PATTERN` | No | -- | Regex the `callback_data` must fully match, e.g. `^DEC-\d+:(yes|no|later)$`. Taps that fail it are logged and dropped |
++
+ **User-mode credentials (optional overrides):** `TELEGRAM_API_ID` and
+ `TELEGRAM_API_HASH` ship with built-in public dev defaults, so only
+ `TELEGRAM_PHONE` is needed to start the phone + OTP flow. `TELEGRAM_SESSION_NAME`
+@@ -219,7 +226,7 @@ Full docs at **[mcp.n24q02m.com/servers/better-telegram-mcp/setup/](https://mcp.
+ 
+ | Tool | Actions | Description |
+ |:-----|:--------|:------------|
+-| `message` | `send`, `edit`, `delete`, `forward`, `pin`, `react`, `search`, `history` | Send, edit, delete, forward messages. Pin, react, search, browse history |
++| `message` | `send`, `edit`, `delete`, `forward`, `pin`, `react`, `search`, `history`, `callbacks` | Send, edit, delete, forward messages. Pin, react, search, browse history. Attach inline buttons and read taps (`callbacks`, bot mode) |
+ | `chat` | `list`, `info`, `create`, `join`, `leave`, `members`, `admin`, `settings`, `topics` | List and manage chats, groups, channels. Members, admin, forum topics |
+ | `media` | `send_photo`, `send_file`, `send_voice`, `send_video`, `download` | Send photos, files, voice notes, videos. Download media from messages |
+ | `contact` | `list`, `search`, `add`, `block` | List, search, add contacts. Block/unblock users (user mode only) |
+diff --git a/src/better_telegram_mcp/backends/base.py b/src/better_telegram_mcp/backends/base.py
+index aaaa3be..d310655 100644
+--- a/src/better_telegram_mcp/backends/base.py
++++ b/src/better_telegram_mcp/backends/base.py
+@@ -25,6 +25,10 @@ def ensure_mode(self, required: str) -> None:
+         if self.mode != required:
+             raise ModeError(required)
+ 
++    def identity_key(self) -> str:
++        """Stable key for per-account server-side state (callback cursor)."""
++        return self.mode
++
+     # --- Connection ---
+     @abstractmethod
+     async def connect(self) -> None: ...
+@@ -56,6 +60,7 @@ async def send_message(
+         *,
+         reply_to: int | None = None,
+         parse_mode: str | None = None,
++        buttons: list[list[dict[str, Any]]] | None = None,
+     ) -> dict[str, Any]: ...
+     @abstractmethod
+     async def edit_message(
+@@ -65,6 +70,7 @@ async def edit_message(
+         text: str,
+         *,
+         parse_mode: str | None = None,
++        buttons: list[list[dict[str, Any]]] | None = None,
+     ) -> dict[str, Any]: ...
+     @abstractmethod
+     async def delete_message(self, chat_id: str | int, message_id: int) -> bool: ...
+@@ -95,6 +101,33 @@ async def get_history(
+         offset_id: int | None = None,
+     ) -> list[dict[str, Any]]: ...
+ 
++    # --- Inline buttons / callback queries (bot mode) ---
++    @abstractmethod
++    async def get_updates(
++        self,
++        *,
++        offset: int | None = None,
++        limit: int = 50,
++        allowed_updates: list[str] | None = None,
++        timeout: int = 0,
++    ) -> list[dict[str, Any]]: ...
++    @abstractmethod
++    async def answer_callback_query(
++        self,
++        callback_query_id: str,
++        *,
++        text: str | None = None,
++        show_alert: bool = False,
++    ) -> bool: ...
++    @abstractmethod
++    async def set_message_reply_markup(
++        self,
++        chat_id: str | int,
++        message_id: int,
++        *,
++        buttons: list[list[dict[str, Any]]] | None = None,
++    ) -> dict[str, Any] | bool: ...
++
+     # --- Chats ---
+     @abstractmethod
+     async def list_chats(self, *, limit: int = 50) -> list[dict[str, Any]]: ...
+diff --git a/src/better_telegram_mcp/backends/bot_backend.py b/src/better_telegram_mcp/backends/bot_backend.py
+index 7125849..a5cc0ad 100644
+--- a/src/better_telegram_mcp/backends/bot_backend.py
++++ b/src/better_telegram_mcp/backends/bot_backend.py
+@@ -8,6 +8,7 @@
+ import httpx
+ 
+ from ..relay_setup import redact_bot_token
++from ..utils.keyboard import build_inline_keyboard
+ from .base import TelegramBackend
+ from .security import (
+     SecurityError,
+@@ -90,6 +91,10 @@ async def is_connected(self) -> bool:
+     async def is_authorized(self) -> bool:
+         return self._connected
+ 
++    def identity_key(self) -> str:
++        bot_id = self._bot_info.get("id")
++        return f"bot:{bot_id}" if bot_id else "bot"
++
+     async def send_code(self, phone: str) -> None:
+         pass  # Bot is always authorized
+ 
+@@ -109,6 +114,7 @@ async def send_message(
+         *,
+         reply_to: int | None = None,
+         parse_mode: str | None = None,
++        buttons: list[list[dict[str, Any]]] | None = None,
+     ) -> dict[str, Any]:
+         return await self._call(
+             "sendMessage",
+@@ -116,6 +122,7 @@ async def send_message(
+             text=text,
+             reply_to_message_id=reply_to,
+             parse_mode=parse_mode,
++            reply_markup=build_inline_keyboard(buttons),
+         )
+ 
+     async def edit_message(
+@@ -125,6 +132,7 @@ async def edit_message(
+         text: str,
+         *,
+         parse_mode: str | None = None,
++        buttons: list[list[dict[str, Any]]] | None = None,
+     ) -> dict[str, Any]:
+         return await self._call(
+             "editMessageText",
+@@ -132,6 +140,7 @@ async def edit_message(
+             message_id=message_id,
+             text=text,
+             parse_mode=parse_mode,
++            reply_markup=build_inline_keyboard(buttons),
+         )
+ 
+     async def delete_message(self, chat_id: str | int, message_id: int) -> bool:
+@@ -180,6 +189,54 @@ async def get_history(
+     ) -> list[dict[str, Any]]:
+         return []  # Bot API cannot read arbitrary chat history
+ 
++    # --- Inline buttons / callback queries ---
++    async def get_updates(
++        self,
++        *,
++        offset: int | None = None,
++        limit: int = 50,
++        allowed_updates: list[str] | None = None,
++        timeout: int = 0,
++    ) -> list[dict[str, Any]]:
++        result = await self._call(
++            "getUpdates",
++            offset=offset,
++            limit=limit,
++            timeout=timeout,
++            allowed_updates=allowed_updates,
++        )
++        return result if isinstance(result, list) else []
++
++    async def answer_callback_query(
++        self,
++        callback_query_id: str,
++        *,
++        text: str | None = None,
++        show_alert: bool = False,
++    ) -> bool:
++        return await self._call(
++            "answerCallbackQuery",
++            callback_query_id=callback_query_id,
++            text=text,
++            show_alert=show_alert or None,
++        )
++
++    async def set_message_reply_markup(
++        self,
++        chat_id: str | int,
++        message_id: int,
++        *,
++        buttons: list[list[dict[str, Any]]] | None = None,
++    ) -> dict[str, Any] | bool:
++        # buttons=None drops reply_markup from the request, which is how the
++        # Bot API spells "remove the keyboard".
++        return await self._call(
++            "editMessageReplyMarkup",
++            chat_id=chat_id,
++            message_id=message_id,
++            reply_markup=build_inline_keyboard(buttons),
++        )
++
+     # --- Chats ---
+     async def list_chats(self, *, limit: int = 50) -> list[dict[str, Any]]:
+         self.ensure_mode("user")
+diff --git a/src/better_telegram_mcp/backends/user_backend.py b/src/better_telegram_mcp/backends/user_backend.py
+index 119dfb0..fedd010 100644
+--- a/src/better_telegram_mcp/backends/user_backend.py
++++ b/src/better_telegram_mcp/backends/user_backend.py
+@@ -278,7 +278,12 @@ async def send_message(
+         *,
+         reply_to: int | None = None,
+         parse_mode: str | None = None,
++        buttons: list[list[dict[str, Any]]] | None = None,
+     ) -> dict[str, Any]:
++        if buttons:
++            # Inline keyboards can only be attached by bots (MTProto rejects
++            # reply_markup from user accounts).
++            self.ensure_mode("bot")
+         client = self._ensure_client()
+         msg = await client.send_message(
+             chat_id, text, reply_to=reply_to, parse_mode=parse_mode
+@@ -292,7 +297,10 @@ async def edit_message(
+         text: str,
+         *,
+         parse_mode: str | None = None,
++        buttons: list[list[dict[str, Any]]] | None = None,
+     ) -> dict[str, Any]:
++        if buttons:
++            self.ensure_mode("bot")
+         client = self._ensure_client()
+         msg = await client.edit_message(
+             chat_id, message_id, text, parse_mode=parse_mode
+@@ -372,6 +380,35 @@ async def get_history(
+             async for m in client.iter_messages(chat_id, **kwargs)
+         ]
+ 
++    # --- Inline buttons / callback queries (bot mode only) ---
++    async def get_updates(
++        self,
++        *,
++        offset: int | None = None,
++        limit: int = 50,
++        allowed_updates: list[str] | None = None,
++        timeout: int = 0,
++    ) -> list[dict[str, Any]]:
++        self.ensure_mode("bot")
++
++    async def answer_callback_query(
++        self,
++        callback_query_id: str,
++        *,
++        text: str | None = None,
++        show_alert: bool = False,
++    ) -> bool:
++        self.ensure_mode("bot")
++
++    async def set_message_reply_markup(
++        self,
++        chat_id: str | int,
++        message_id: int,
++        *,
++        buttons: list[list[dict[str, Any]]] | None = None,
++    ) -> dict[str, Any] | bool:
++        self.ensure_mode("bot")
++
+     # --- Chats ---
+     async def list_chats(self, *, limit: int = 50) -> list[dict[str, Any]]:
+         client = self._ensure_client()
+diff --git a/src/better_telegram_mcp/callbacks.py b/src/better_telegram_mcp/callbacks.py
+new file mode 100644
+index 0000000..ed65a54
+--- /dev/null
++++ b/src/better_telegram_mcp/callbacks.py
+@@ -0,0 +1,139 @@
++"""Policy and cursor state for inline-button callback queries.
++
++Two pieces of durable-ish state sit behind ``message(action='callbacks')``:
++
++* a **policy** -- who is allowed to press the bot's buttons, and what
++  ``callback_data`` is considered well-formed. A callback query is a message
++  from an arbitrary Telegram user, so the sender allowlist is the security
++  boundary; the data pattern is a second belt on data the server itself
++  minted.
++* a **cursor** -- the highest ``update_id`` already handed to the caller.
++  Keeping it server-side means a repeated ``callbacks`` call cannot replay a
++  press the agent already acted on.
++"""
++
++from __future__ import annotations
++
++import json
++import re
++from dataclasses import dataclass, field
++from pathlib import Path
++from typing import Any
++
++from loguru import logger
++
++
++@dataclass(frozen=True)
++class CallbackPolicy:
++    """Who may press buttons, and what their payload must look like."""
++
++    allowed_from_ids: frozenset[int] = frozenset()
++    data_pattern: re.Pattern[str] | None = None
++
++    @classmethod
++    def from_settings(cls, settings: Any) -> CallbackPolicy:
++        return cls(
++            allowed_from_ids=_parse_sender_ids(
++                getattr(settings, "allowed_callback_senders", None)
++            ),
++            data_pattern=_compile_pattern(
++                getattr(settings, "callback_data_pattern", None)
++            ),
++        )
++
++    def rejection_reason(self, *, from_id: Any, data: Any) -> str | None:
++        """Return why this press must be ignored, or ``None`` to accept it."""
++        if not isinstance(from_id, int):
++            return "unknown_sender"
++        if self.allowed_from_ids and from_id not in self.allowed_from_ids:
++            return "sender_not_allowed"
++        if not isinstance(data, str) or not data:
++            return "missing_data"
++        if self.data_pattern is not None and not self.data_pattern.fullmatch(data):
++            return "data_pattern_mismatch"
++        return None
++
++
++def _parse_sender_ids(raw: str | None) -> frozenset[int]:
++    if not raw:
++        return frozenset()
++    ids: set[int] = set()
++    for chunk in str(raw).replace(";", ",").split(","):
++        chunk = chunk.strip()
++        if not chunk:
++            continue
++        try:
++            ids.add(int(chunk))
++        except ValueError:
++            logger.warning(
++                "Ignoring non-numeric entry in TELEGRAM_ALLOWED_CALLBACK_SENDERS: {}",
++                chunk,
++            )
++    return frozenset(ids)
++
++
++def _compile_pattern(raw: str | None) -> re.Pattern[str] | None:
++    if not raw or not str(raw).strip():
++        return None
++    try:
++        return re.compile(str(raw))
++    except re.error as e:
++        logger.warning(
++            "Ignoring invalid TELEGRAM_CALLBACK_DATA_PATTERN ({}): {}", raw, e
++        )
++        return None
++
++
++class CursorStore:
++    """Last consumed ``update_id`` per bot identity.
++
++    Backed by a small JSON file so the cursor survives a server restart; falls
++    back to memory when the path is unusable (read-only volume, CF workers),
++    which still prevents replays inside one process lifetime.
++    """
++
++    def __init__(self, path: Path | None = None):
++        self._path = Path(path) if path else None
++        self._memory: dict[str, int] = {}
++
++    def get(self, scope: str) -> int | None:
++        value = self._read().get(scope)
++        return value if isinstance(value, int) else None
++
++    def set(self, scope: str, update_id: int) -> None:
++        data = self._read()
++        data[scope] = int(update_id)
++        self._memory = data
++        if self._path is None:
++            return
++        try:
++            self._path.parent.mkdir(parents=True, exist_ok=True)
++            tmp = self._path.with_suffix(f"{self._path.suffix}.tmp")
++            tmp.write_text(json.dumps(data), encoding="utf-8")
++            tmp.replace(self._path)
++        except OSError as e:
++            logger.warning("Callback cursor not persisted to {}: {}", self._path, e)
++
++    def _read(self) -> dict[str, int]:
++        if self._path is None:
++            return dict(self._memory)
++        try:
++            raw = json.loads(self._path.read_text(encoding="utf-8"))
++        except (OSError, ValueError):
++            return dict(self._memory)
++        if not isinstance(raw, dict):
++            return dict(self._memory)
++        return {k: v for k, v in raw.items() if isinstance(v, int)}
++
++
++@dataclass
++class CallbackContext:
++    """Everything ``message(action='callbacks')`` needs beyond the backend."""
++
++    policy: CallbackPolicy = field(default_factory=CallbackPolicy)
++    cursor: CursorStore = field(default_factory=CursorStore)
++
++    @classmethod
++    def default(cls) -> CallbackContext:
++        """In-memory, allow-everyone context (tests and unconfigured servers)."""
++        return cls()
+diff --git a/src/better_telegram_mcp/config.py b/src/better_telegram_mcp/config.py
+index b41e9aa..789d430 100644
+--- a/src/better_telegram_mcp/config.py
++++ b/src/better_telegram_mcp/config.py
+@@ -61,6 +61,14 @@ class Settings(BaseSettings):
+     # Security
+     trusted_proxies: str | None = None
+ 
++    # Inline-button callbacks (bot mode). Comma-separated Telegram user IDs
++    # allowed to press this bot's buttons -- empty means "accept anyone", so
++    # set it whenever the buttons drive real actions. The optional regex is a
++    # second check on callback_data the server itself minted, e.g.
++    # ^DEC-\d+:(yes|no|later)$.
++    allowed_callback_senders: str | None = None
++    callback_data_pattern: str | None = None
++
+     # Runtime (derived)
+     mode: Literal["bot", "user"] = "bot"
+ 
+@@ -79,6 +87,8 @@ def _detect_mode(self) -> Settings:
+         self.bot_token = _empty_to_none(self.bot_token)
+         self.api_hash = _empty_to_none(self.api_hash)
+         self.phone = _empty_to_none(self.phone)
++        self.allowed_callback_senders = _empty_to_none(self.allowed_callback_senders)
++        self.callback_data_pattern = _empty_to_none(self.callback_data_pattern)
+ 
+         has_bot = self.bot_token is not None
+         # User mode requires phone (api_id/api_hash have built-in defaults)
+diff --git a/src/better_telegram_mcp/docs/messages.md b/src/better_telegram_mcp/docs/messages.md
+index 43f29b5..ba60614 100644
+--- a/src/better_telegram_mcp/docs/messages.md
++++ b/src/better_telegram_mcp/docs/messages.md
+@@ -1,6 +1,7 @@
+ # Telegram Messages
+ 
+-Manage messages: send, edit, delete, forward, pin, react, search, and browse history.
++Manage messages: send, edit, delete, forward, pin, react, search, browse history,
++and read inline-button taps.
+ 
+ ## Actions
+ 
+@@ -10,6 +11,22 @@ Send a new message to a chat.
+ - **text** (required): Message text
+ - **reply_to**: Message ID to reply to
+ - **parse_mode**: "HTML" or "Markdown"
++- **buttons**: Inline keyboard, as rows of `{"text": ..., "data": ...}` (bot mode only)
++
++```jsonc
++{
++  "action": "send",
++  "chat_id": 375465077,
++  "text": "DEC-12 — move \"pay the insurance\" to 24.10?",
++  "buttons": [[{"text": "✅ Yes",   "data": "DEC-12:yes"},
++               {"text": "✖️ No",    "data": "DEC-12:no"},
++               {"text": "🕓 Later", "data": "DEC-12:later"}]]
++}
++```
++
++`data` becomes the Bot API `callback_data` returned by the `callbacks` action.
++Limits enforced before the request goes out: `data` is 1-64 bytes (UTF-8), at
++most 8 buttons per row and 100 rows. A flat list is accepted as a single row.
+ 
+ ### edit
+ Edit an existing message.
+@@ -17,6 +34,10 @@ Edit an existing message.
+ - **message_id** (required): Message to edit
+ - **text** (required): New text
+ - **parse_mode**: "HTML" or "Markdown"
++- **buttons**: Replace the inline keyboard; `[]` strips it (bot mode only)
++
++Editing the text with `buttons: []` is the usual way to close a question:
++`"DEC-12 — … — ✅ yes"` with no buttons left to tap.
+ 
+ ### delete
+ Delete a message.
+@@ -51,3 +72,46 @@ Get chat message history (user mode only).
+ - **chat_id** (required): Chat ID or username
+ - **limit**: Max messages (default: 20)
+ - **offset_id**: Start from this message ID
++
++### callbacks
++Read inline-button taps since the last read (bot mode only).
++- **since_id**: Read updates after this `update_id`; omitted, the server's own
++  cursor is used
++- **limit**: Max updates per call, 1-100 (default: 20)
++- **ack_text**: Text shown in the tap confirmation toast
++- **strip_buttons**: Remove the keyboard from each answered message (default: false)
++
++```jsonc
++{"action": "callbacks", "since_id": 123456789, "limit": 50}
++```
++
++```jsonc
++{
++  "callbacks": [{"update_id": 123456790,
++                 "data": "DEC-12:yes",
++                 "from_id": 375465077,
++                 "chat_id": 375465077,
++                 "message_id": 4711,
++                 "date": "2026-08-25T14:03:11Z",
++                 "callback_query_id": "...",
++                 "answered": true}],
++  "count": 1,
++  "ignored": [],
++  "cursor": 123456790
++}
++```
++
++Every returned tap is acknowledged with `answerCallbackQuery`, so the client's
++spinner stops. `date` is the date of the message carrying the buttons -- the Bot
++API does not report the moment of the tap.
++
++**The cursor is server-side.** It advances past everything a call consumed, so
++calling `callbacks` twice never replays a tap the agent already acted on, and a
++restart does not rewind it (it is stored in `TELEGRAM_DATA_DIR`).
++
++**Taps are filtered before they reach you.** `TELEGRAM_ALLOWED_CALLBACK_SENDERS`
++(comma-separated user IDs) and `TELEGRAM_CALLBACK_DATA_PATTERN` (a regex, e.g.
++`^DEC-\d+:(yes|no|later)$`) decide what counts; anything else is logged, listed
++under `ignored`, and never acknowledged. With no allowlist configured, *any*
++Telegram user who reaches the bot can tap its buttons -- set it whenever the
++buttons drive real actions.
+diff --git a/src/better_telegram_mcp/server.py b/src/better_telegram_mcp/server.py
+index 68558ed..92659e0 100644
+--- a/src/better_telegram_mcp/server.py
++++ b/src/better_telegram_mcp/server.py
+@@ -12,6 +12,7 @@
+ from mcp.types import ToolAnnotations
+ 
+ from .backends.base import TelegramBackend
++from .callbacks import CallbackContext, CallbackPolicy, CursorStore
+ from .config import Settings
+ from .security import build_external_tool_result
+ from .tools.chats import ChatOptions, handle_chats
+@@ -28,6 +29,7 @@
+ 
+ _backend: TelegramBackend | None = None
+ _settings: Settings | None = None
++_callback_context: CallbackContext | None = None
+ _pending_auth: bool = False
+ _unconfigured: bool = False
+ _runtime_config: dict[str, int] = {
+@@ -72,6 +74,25 @@ def get_settings() -> Settings:
+     return _settings
+ 
+ 
++def get_callback_context() -> CallbackContext:
++    """Sender allowlist + update cursor for inline-button callback queries.
++
++    Built once from settings; the cursor file lives next to the session data
++    so a restart cannot replay presses the agent already acted on.
++    """
++    global _callback_context
++    if _callback_context is None:
++        try:
++            settings = get_settings()
++        except RuntimeError:
++            return CallbackContext.default()
++        _callback_context = CallbackContext(
++            policy=CallbackPolicy.from_settings(settings),
++            cursor=CursorStore(settings.data_dir / "callback_cursor.json"),
++        )
++    return _callback_context
++
++
+ def _not_ready_response() -> dict[str, Any]:
+     if _unconfigured:
+         return ok(
+@@ -155,8 +176,9 @@ async def _reinit_backend_from_relay() -> None:
+ 
+ @asynccontextmanager
+ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
+-    global _backend, _settings, _pending_auth, _unconfigured
++    global _backend, _settings, _pending_auth, _unconfigured, _callback_context
+     _settings = _ensure_settings()
++    _callback_context = None
+ 
+     if not _settings.is_configured:
+         if _multi_user_mode:
+@@ -286,18 +308,29 @@ async def message(
+     query: str | None = None,
+     limit: int = 20,
+     offset_id: int | None = None,
++    buttons: list[list[dict[str, Any]]] | list[dict[str, Any]] | None = None,
++    since_id: int | None = None,
++    ack_text: str | None = None,
++    strip_buttons: bool = False,
+ ) -> dict[str, Any]:
+-    """Send, edit, delete, forward, pin, react, search, and get message history.
++    """Send, edit, delete, forward, pin, react, search, get history, read button taps.
+ 
+     Actions (chat_id: "@username" | int):
+-    - send (chat_id, text -> reply_to, parse_mode)
+-    - edit (chat_id, message_id, text -> parse_mode)
++    - send (chat_id, text -> reply_to, parse_mode, buttons)
++    - edit (chat_id, message_id, text -> parse_mode, buttons)
+     - delete (chat_id, message_id)
+     - forward (from_chat, to_chat, message_id)
+     - pin (chat_id, message_id)
+     - react (chat_id, message_id, emoji)
+     - search (query -> chat_id, limit=20)
+     - history (chat_id -> limit=20, offset_id)
++    - callbacks (-> since_id, limit=20, ack_text, strip_buttons): inline-button
++      taps since the last read; the cursor is kept server-side, so each tap is
++      returned once. Bot mode only.
++
++    buttons: rows of inline buttons, [[{"text": "Yes", "data": "DEC-12:yes"}]].
++    "data" is the callback_data returned by the callbacks action (max 64 bytes,
++    max 8 buttons per row). On edit, buttons=[] strips the keyboard.
+     """
+     if _unconfigured or _pending_auth:
+         return _not_ready_response()
+@@ -315,8 +348,12 @@ async def message(
+         query=query,
+         limit=limit,
+         offset_id=offset_id,
++        buttons=buttons,
++        since_id=since_id,
++        ack_text=ack_text,
++        strip_buttons=strip_buttons,
+     )
+-    return await handle_messages(get_backend(), args)
++    return await handle_messages(get_backend(), args, get_callback_context())
+ 
+ 
+ @mcp.tool(
+diff --git a/src/better_telegram_mcp/tools/messages.py b/src/better_telegram_mcp/tools/messages.py
+index 19cea69..000d6c2 100644
+--- a/src/better_telegram_mcp/tools/messages.py
++++ b/src/better_telegram_mcp/tools/messages.py
+@@ -1,11 +1,18 @@
++import asyncio
+ from collections.abc import Callable, Coroutine
++from datetime import UTC, datetime
+ from typing import Any
+ 
++from loguru import logger
+ from pydantic import BaseModel
+ 
+ from ..backends.base import ModeError, TelegramBackend
++from ..callbacks import CallbackContext
+ from ..utils.formatting import err, ok, safe_error
+ 
++# getUpdates accepts 1-100 per call.
++_MAX_CALLBACKS_PER_CALL = 100
++
+ 
+ class MessagesArgs(BaseModel):
+     action: str
+@@ -20,38 +27,53 @@ class MessagesArgs(BaseModel):
+     query: str | None = None
+     limit: int = 20
+     offset_id: int | None = None
++    buttons: list[list[dict[str, Any]]] | list[dict[str, Any]] | None = None
++    since_id: int | None = None
++    ack_text: str | None = None
++    strip_buttons: bool = False
+ 
+ 
+-async def _handle_send(backend: TelegramBackend, args: MessagesArgs) -> dict[str, Any]:
++async def _handle_send(
++    backend: TelegramBackend, args: MessagesArgs, ctx: CallbackContext
++) -> dict[str, Any]:
+     if not args.chat_id or not args.text:
+         return err(
+             "'send' requires chat_id and text. "
+             "chat_id: positive int (user), negative int (group), or @username. "
+-            "Optional parse_mode: HTML, MarkdownV2, or Markdown."
++            "Optional parse_mode: HTML, MarkdownV2, or Markdown. "
++            'Optional buttons: [[{"text": "Yes", "data": "DEC-12:yes"}]].'
+         )
+     result = await backend.send_message(
+         args.chat_id,
+         args.text,
+         reply_to=args.reply_to,
+         parse_mode=args.parse_mode,
++        buttons=args.buttons,
+     )
+     return ok(result)
+ 
+ 
+-async def _handle_edit(backend: TelegramBackend, args: MessagesArgs) -> dict[str, Any]:
++async def _handle_edit(
++    backend: TelegramBackend, args: MessagesArgs, ctx: CallbackContext
++) -> dict[str, Any]:
+     if not args.chat_id or args.message_id is None or not args.text:
+         return err(
+             "'edit' requires chat_id, message_id, and text. "
+-            "Optional parse_mode: HTML, MarkdownV2, or Markdown."
++            "Optional parse_mode: HTML, MarkdownV2, or Markdown. "
++            "Optional buttons: pass [] to strip the inline keyboard."
+         )
+     result = await backend.edit_message(
+-        args.chat_id, args.message_id, args.text, parse_mode=args.parse_mode
++        args.chat_id,
++        args.message_id,
++        args.text,
++        parse_mode=args.parse_mode,
++        buttons=args.buttons,
+     )
+     return ok(result)
+ 
+ 
+ async def _handle_delete(
+-    backend: TelegramBackend, args: MessagesArgs
++    backend: TelegramBackend, args: MessagesArgs, ctx: CallbackContext
+ ) -> dict[str, Any]:
+     if not args.chat_id or args.message_id is None:
+         return err("'delete' requires chat_id and message_id")
+@@ -60,7 +82,7 @@ async def _handle_delete(
+ 
+ 
+ async def _handle_forward(
+-    backend: TelegramBackend, args: MessagesArgs
++    backend: TelegramBackend, args: MessagesArgs, ctx: CallbackContext
+ ) -> dict[str, Any]:
+     if not args.from_chat or not args.to_chat or args.message_id is None:
+         return err("'forward' requires from_chat, to_chat, and message_id")
+@@ -70,14 +92,18 @@ async def _handle_forward(
+     return ok(result)
+ 
+ 
+-async def _handle_pin(backend: TelegramBackend, args: MessagesArgs) -> dict[str, Any]:
++async def _handle_pin(
++    backend: TelegramBackend, args: MessagesArgs, ctx: CallbackContext
++) -> dict[str, Any]:
+     if not args.chat_id or args.message_id is None:
+         return err("'pin' requires chat_id and message_id")
+     result = await backend.pin_message(args.chat_id, args.message_id)
+     return ok({"pinned": result})
+ 
+ 
+-async def _handle_react(backend: TelegramBackend, args: MessagesArgs) -> dict[str, Any]:
++async def _handle_react(
++    backend: TelegramBackend, args: MessagesArgs, ctx: CallbackContext
++) -> dict[str, Any]:
+     if not args.chat_id or args.message_id is None or not args.emoji:
+         return err("'react' requires chat_id, message_id, and emoji")
+     result = await backend.react_to_message(args.chat_id, args.message_id, args.emoji)
+@@ -85,7 +111,7 @@ async def _handle_react(backend: TelegramBackend, args: MessagesArgs) -> dict[st
+ 
+ 
+ async def _handle_search(
+-    backend: TelegramBackend, args: MessagesArgs
++    backend: TelegramBackend, args: MessagesArgs, ctx: CallbackContext
+ ) -> dict[str, Any]:
+     if not args.query:
+         return err("'search' requires query")
+@@ -96,7 +122,7 @@ async def _handle_search(
+ 
+ 
+ async def _handle_history(
+-    backend: TelegramBackend, args: MessagesArgs
++    backend: TelegramBackend, args: MessagesArgs, ctx: CallbackContext
+ ) -> dict[str, Any]:
+     if not args.chat_id:
+         return err("'history' requires chat_id")
+@@ -106,8 +132,132 @@ async def _handle_history(
+     return ok({"messages": results, "count": len(results)})
+ 
+ 
++def _iso_utc(unix_ts: Any) -> str | None:
++    if not isinstance(unix_ts, int):
++        return None
++    return (
++        datetime.fromtimestamp(unix_ts, tz=UTC)
++        .isoformat(timespec="seconds")
++        .replace("+00:00", "Z")
++    )
++
++
++async def _ack(backend: TelegramBackend, query_id: str, text: str | None) -> bool:
++    """Answer a callback query so the client stops showing the spinner."""
++    try:
++        await backend.answer_callback_query(query_id, text=text)
++    except Exception as e:  # a failed ack must not drop the press itself
++        logger.warning("answerCallbackQuery failed for {}: {}", query_id, e)
++        return False
++    return True
++
++
++async def _strip_buttons(
++    backend: TelegramBackend, chat_id: Any, message_id: Any
++) -> bool:
++    if chat_id is None or message_id is None:
++        return False
++    try:
++        await backend.set_message_reply_markup(chat_id, message_id, buttons=None)
++    except Exception as e:
++        logger.warning(
++            "editMessageReplyMarkup failed for {}/{}: {}", chat_id, message_id, e
++        )
++        return False
++    return True
++
++
++async def _handle_callbacks(
++    backend: TelegramBackend, args: MessagesArgs, ctx: CallbackContext
++) -> dict[str, Any]:
++    """Drain inline-button presses since the last consumed update_id.
++
++    The cursor lives server-side, so calling this twice never replays a press
++    the agent has already acted on. Presses from senders outside the allowlist
++    (or with malformed callback_data) are skipped and reported under
++    "ignored" -- they are never acknowledged and never reach the caller.
++    """
++    limit = max(1, min(args.limit, _MAX_CALLBACKS_PER_CALL))
++    scope = backend.identity_key()
++    stored = await asyncio.to_thread(ctx.cursor.get, scope)
++    since = args.since_id if args.since_id is not None else stored
++    offset = since + 1 if since is not None else None
++
++    updates = await backend.get_updates(
++        offset=offset,
++        limit=limit,
++        allowed_updates=["callback_query"],
++        timeout=0,
++    )
++
++    highest = since
++    items: list[dict[str, Any]] = []
++    ignored: list[dict[str, Any]] = []
++
++    for update in updates:
++        if not isinstance(update, dict):
++            continue
++        update_id = update.get("update_id")
++        if isinstance(update_id, int) and (highest is None or update_id > highest):
++            highest = update_id
++
++        query = update.get("callback_query")
++        if not isinstance(query, dict):
++            # allowed_updates does not filter updates queued before this call,
++            # so anything else is skipped -- but still confirmed by the cursor.
++            continue
++
++        data = query.get("data")
++        sender = query.get("from") or {}
++        from_id = sender.get("id")
++        reason = ctx.policy.rejection_reason(from_id=from_id, data=data)
++        if reason:
++            logger.warning(
++                "Ignoring callback_query {} from {}: {}", update_id, from_id, reason
++            )
++            ignored.append(
++                {"update_id": update_id, "from_id": from_id, "reason": reason}
++            )
++            continue
++
++        message = query.get("message") or {}
++        chat_id = (message.get("chat") or {}).get("id")
++        message_id = message.get("message_id")
++        item: dict[str, Any] = {
++            "update_id": update_id,
++            "data": data,
++            "from_id": from_id,
++            "chat_id": chat_id,
++            "message_id": message_id,
++            # Bot API reports the date of the message carrying the buttons,
++            # not the moment of the press.
++            "date": _iso_utc(message.get("date")),
++            "callback_query_id": query.get("id"),
++            "answered": await _ack(backend, query.get("id"), args.ack_text),
++        }
++        if args.strip_buttons:
++            item["buttons_removed"] = await _strip_buttons(backend, chat_id, message_id)
++        items.append(item)
++
++    if highest is not None and highest != stored:
++        await asyncio.to_thread(ctx.cursor.set, scope, highest)
++
++    return ok(
++        {
++            "callbacks": items,
++            "count": len(items),
++            "ignored": ignored,
++            "cursor": highest,
++        }
++    )
++
++
+ _ACTION_HANDLERS: dict[
+-    str, Callable[[TelegramBackend, MessagesArgs], Coroutine[Any, Any, dict[str, Any]]]
++    str,
++    Callable[
++        [TelegramBackend, MessagesArgs, CallbackContext],
++        Coroutine[Any, Any, dict[str, Any]],
++    ],
+ ] = {
+     "send": _handle_send,
+     "edit": _handle_edit,
+@@ -117,12 +267,14 @@ async def _handle_history(
+     "react": _handle_react,
+     "search": _handle_search,
+     "history": _handle_history,
++    "callbacks": _handle_callbacks,
+ }
+ 
+ 
+ async def handle_messages(
+     backend: TelegramBackend,
+     args: MessagesArgs,
++    ctx: CallbackContext | None = None,
+ ) -> dict[str, Any]:
+     try:
+         handler = _ACTION_HANDLERS.get(args.action)
+@@ -135,7 +287,7 @@ async def handle_messages(
+             return err(
+                 f"Unknown action '{args.action}'.{suggestion} Valid: {'|'.join(valid)}"
+             )
+-        return await handler(backend, args)
++        return await handler(backend, args, ctx or CallbackContext.default())
+     except ModeError as e:
+         return err(str(e))
+     except Exception as e:
+diff --git a/src/better_telegram_mcp/utils/keyboard.py b/src/better_telegram_mcp/utils/keyboard.py
+new file mode 100644
+index 0000000..51b6310
+--- /dev/null
++++ b/src/better_telegram_mcp/utils/keyboard.py
+@@ -0,0 +1,91 @@
++"""Inline-keyboard construction for Bot API ``reply_markup``.
++
++The MCP tool layer accepts a compact button spec -- rows of
++``{"text": ..., "data": ...}`` -- and this module turns it into the
++``{"inline_keyboard": [[{"text": ..., "callback_data": ...}]]}`` payload the
++Bot API expects, rejecting anything Telegram would reject anyway (over-long
++``callback_data``, empty labels, oversized rows) before the request goes out.
++"""
++
++from __future__ import annotations
++
++from typing import Any
++
++# Bot API caps callback_data at 1-64 bytes (UTF-8). Row/grid limits are not
++# documented as hard errors, but wide keyboards render badly on mobile and a
++# runaway grid is almost always a caller bug -- so both are refused here.
++MAX_CALLBACK_DATA_BYTES = 64
++MAX_BUTTONS_PER_ROW = 8
++MAX_ROWS = 100
++
++ButtonRows = list[list[dict[str, Any]]]
++
++
++def normalize_buttons(buttons: Any) -> ButtonRows:
++    """Coerce the caller's button spec into a list of rows.
++
++    Accepts the canonical rows-of-buttons form and, as a convenience, a flat
++    list of buttons (treated as a single row).
++    """
++    if not isinstance(buttons, list):
++        raise ValueError(
++            "buttons must be a list of rows, e.g. "
++            '[[{"text": "Yes", "data": "DEC-12:yes"}]]'
++        )
++    if buttons and all(isinstance(b, dict) for b in buttons):
++        return [list(buttons)]
++    rows: ButtonRows = []
++    for row in buttons:
++        if not isinstance(row, list):
++            raise ValueError(
++                "buttons must be a list of rows (each row a list of buttons), "
++                'e.g. [[{"text": "Yes", "data": "DEC-12:yes"}]]'
++            )
++        rows.append(list(row))
++    return rows
++
++
++def _build_button(button: Any) -> dict[str, str]:
++    if not isinstance(button, dict):
++        raise ValueError('each button must be an object with "text" and "data"')
++
++    text = button.get("text")
++    if not isinstance(text, str) or not text.strip():
++        raise ValueError('each button needs a non-empty "text"')
++
++    data = button.get("data", button.get("callback_data"))
++    if not isinstance(data, str) or not data:
++        raise ValueError(
++            f'button "{text}" needs a non-empty "data" (callback_data) string'
++        )
++    size = len(data.encode("utf-8"))
++    if size > MAX_CALLBACK_DATA_BYTES:
++        raise ValueError(
++            f'button "{text}" has callback_data of {size} bytes; '
++            f"Telegram allows at most {MAX_CALLBACK_DATA_BYTES}"
++        )
++    return {"text": text, "callback_data": data}
++
++
++def build_inline_keyboard(buttons: Any | None) -> dict[str, Any] | None:
++    """Build a ``reply_markup`` payload from a button spec.
++
++    ``None`` yields ``None`` (send/edit without touching the keyboard); an
++    empty list yields an empty ``inline_keyboard``, which Telegram reads as
++    "remove the buttons".
++    """
++    if buttons is None:
++        return None
++
++    rows = normalize_buttons(buttons)
++    if len(rows) > MAX_ROWS:
++        raise ValueError(f"too many button rows ({len(rows)}); max is {MAX_ROWS}")
++
++    keyboard: list[list[dict[str, str]]] = []
++    for row in rows:
++        if len(row) > MAX_BUTTONS_PER_ROW:
++            raise ValueError(
++                f"too many buttons in a row ({len(row)}); max is {MAX_BUTTONS_PER_ROW}"
++            )
++        keyboard.append([_build_button(b) for b in row])
++    return {"inline_keyboard": keyboard}
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 0961f41..db5cd3d 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -54,6 +54,7 @@ async def send_message(
+         *,
+         reply_to: int | None = None,
+         parse_mode: str | None = None,
++        buttons: list[list[dict[str, Any]]] | None = None,
+     ) -> dict[str, Any]: ...
+     async def edit_message(
+         self,
+@@ -62,7 +63,30 @@ async def edit_message(
+         text: str,
+         *,
+         parse_mode: str | None = None,
++        buttons: list[list[dict[str, Any]]] | None = None,
+     ) -> dict[str, Any]: ...
++    async def get_updates(
++        self,
++        *,
++        offset: int | None = None,
++        limit: int = 50,
++        allowed_updates: list[str] | None = None,
++        timeout: int = 0,
++    ) -> list[dict[str, Any]]: ...
++    async def answer_callback_query(
++        self,
++        callback_query_id: str,
++        *,
++        text: str | None = None,
++        show_alert: bool = False,
++    ) -> bool: ...
++    async def set_message_reply_markup(
++        self,
++        chat_id: str | int,
++        message_id: int,
++        *,
++        buttons: list[list[dict[str, Any]]] | None = None,
++    ) -> dict[str, Any] | bool: ...
+     async def delete_message(self, chat_id: str | int, message_id: int) -> bool: ...
+     async def forward_message(
+         self, from_chat: str | int, to_chat: str | int, message_id: int
+@@ -129,6 +153,9 @@ def __init__(self, mode: str = "bot"):
+         self.react_to_message = AsyncMock(return_value=True)
+         self.search_messages = AsyncMock(return_value=[])
+         self.get_history = AsyncMock(return_value=[])
++        self.get_updates = AsyncMock(return_value=[])
++        self.answer_callback_query = AsyncMock(return_value=True)
++        self.set_message_reply_markup = AsyncMock(return_value=True)
+         self.list_chats = AsyncMock(return_value=[])
+         self.get_chat_info = AsyncMock(return_value={})
+         self.create_chat = AsyncMock(return_value={})
+diff --git a/tests/test_backends/test_bot_buttons.py b/tests/test_backends/test_bot_buttons.py
+new file mode 100644
+index 0000000..ef84e4a
+--- /dev/null
++++ b/tests/test_backends/test_bot_buttons.py
+@@ -0,0 +1,153 @@
++from __future__ import annotations
++
++import httpx
++import pytest
++
++from better_telegram_mcp.backends.base import ModeError
++from better_telegram_mcp.backends.bot_backend import BotBackend
++
++TOKEN = "123456:AAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
++
++BUTTONS = [
++    [
++        {"text": "✅ Да", "data": "DEC-12:yes"},
++        {"text": "✖️ Нет", "data": "DEC-12:no"},
++    ]
++]
++
++
++def _recording_bot(result=True):
++    """BotBackend whose HTTP calls are captured as (method, payload) pairs."""
++    calls: list[tuple[str, dict]] = []
++
++    def handler(request: httpx.Request) -> httpx.Response:
++        import json
++
++        calls.append(
++            (request.url.path.rsplit("/", 1)[-1], json.loads(request.content or b"{}"))
++        )
++        return httpx.Response(200, json={"ok": True, "result": result})
++
++    bot = BotBackend(TOKEN)
++    bot._client = httpx.AsyncClient(
++        transport=httpx.MockTransport(handler), base_url=bot._base_url
++    )
++    return bot, calls
++
++
++async def test_send_message_attaches_inline_keyboard():
++    bot, calls = _recording_bot({"message_id": 4711})
++    await bot.send_message(375465077, "DEC-12 — перенести?", buttons=BUTTONS)
++
++    method, payload = calls[0]
++    assert method == "sendMessage"
++    assert payload["reply_markup"] == {
++        "inline_keyboard": [
++            [
++                {"text": "✅ Да", "callback_data": "DEC-12:yes"},
++                {"text": "✖️ Нет", "callback_data": "DEC-12:no"},
++            ]
++        ]
++    }
++
++
++async def test_send_message_without_buttons_omits_reply_markup():
++    bot, calls = _recording_bot({"message_id": 1})
++    await bot.send_message(1, "plain")
++    assert "reply_markup" not in calls[0][1]
++
++
++async def test_send_message_rejects_bad_buttons_before_calling_telegram():
++    bot, calls = _recording_bot()
++    with pytest.raises(ValueError, match="callback_data"):
++        await bot.send_message(1, "hi", buttons=[[{"text": "Yes", "data": "x" * 65}]])
++    assert calls == []
++
++
++async def test_edit_message_can_replace_and_strip_buttons():
++    bot, calls = _recording_bot({"message_id": 4711})
++    await bot.edit_message(1, 4711, "done — ✅ да", buttons=[])
++    method, payload = calls[0]
++    assert method == "editMessageText"
++    assert payload["reply_markup"] == {"inline_keyboard": []}
++
++
++async def test_get_updates_passes_offset_and_filter():
++    update = {"update_id": 7, "callback_query": {"id": "q", "data": "DEC-1:yes"}}
++    bot, calls = _recording_bot([update])
++    result = await bot.get_updates(
++        offset=7, limit=50, allowed_updates=["callback_query"]
++    )
++
++    method, payload = calls[0]
++    assert method == "getUpdates"
++    assert payload == {
++        "offset": 7,
++        "limit": 50,
++        "timeout": 0,
++        "allowed_updates": ["callback_query"],
++    }
++    assert result == [update]
++
++
++async def test_get_updates_tolerates_non_list_result():
++    bot, _ = _recording_bot(True)
++    assert await bot.get_updates() == []
++
++
++async def test_answer_callback_query():
++    bot, calls = _recording_bot(True)
++    assert await bot.answer_callback_query("q-1", text="Принято") is True
++    method, payload = calls[0]
++    assert method == "answerCallbackQuery"
++    assert payload == {"callback_query_id": "q-1", "text": "Принято"}
++
++
++async def test_answer_callback_query_with_alert():
++    bot, calls = _recording_bot(True)
++    await bot.answer_callback_query("q-1", show_alert=True)
++    assert calls[0][1]["show_alert"] is True
++
++
++async def test_set_message_reply_markup_removes_keyboard():
++    bot, calls = _recording_bot(True)
++    await bot.set_message_reply_markup(375465077, 4711)
++    method, payload = calls[0]
++    assert method == "editMessageReplyMarkup"
++    assert payload == {"chat_id": 375465077, "message_id": 4711}
++
++
++async def test_set_message_reply_markup_replaces_keyboard():
++    bot, calls = _recording_bot(True)
++    await bot.set_message_reply_markup(1, 2, buttons=BUTTONS)
++    assert calls[0][1]["reply_markup"]["inline_keyboard"][0][0] == {
++        "text": "✅ Да",
++        "callback_data": "DEC-12:yes",
++    }
++
++
++async def test_identity_key_uses_bot_id():
++    bot, _ = _recording_bot({"id": 99, "is_bot": True, "first_name": "T"})
++    assert bot.identity_key() == "bot"
++    await bot.connect()
++    assert bot.identity_key() == "bot:99"
++
++
++# --- User mode ---
++
++
++async def test_user_backend_refuses_buttons():
++    from better_telegram_mcp.backends.user_backend import UserBackend
++    from better_telegram_mcp.config import Settings
++
++    backend = UserBackend(Settings(api_id=1, api_hash="h", phone="+15550000"))
++    with pytest.raises(ModeError):
++        await backend.send_message(1, "hi", buttons=BUTTONS)
++    with pytest.raises(ModeError):
++        await backend.edit_message(1, 2, "hi", buttons=BUTTONS)
++    with pytest.raises(ModeError):
++        await backend.get_updates()
++    with pytest.raises(ModeError):
++        await backend.answer_callback_query("q")
++    with pytest.raises(ModeError):
++        await backend.set_message_reply_markup(1, 2)
+diff --git a/tests/test_callbacks.py b/tests/test_callbacks.py
+new file mode 100644
+index 0000000..3cf2f0e
+--- /dev/null
++++ b/tests/test_callbacks.py
+@@ -0,0 +1,139 @@
++from __future__ import annotations
++
++import re
++
++from better_telegram_mcp.callbacks import (
++    CallbackContext,
++    CallbackPolicy,
++    CursorStore,
++)
++from better_telegram_mcp.config import Settings
++
++DEC = re.compile(r"^DEC-\d+:(yes|no|later)$")
++
++
++# --- Policy ---
++
++
++def test_empty_allowlist_accepts_any_sender():
++    policy = CallbackPolicy()
++    assert policy.rejection_reason(from_id=1, data="anything") is None
++
++
++def test_allowlist_rejects_other_senders():
++    policy = CallbackPolicy(allowed_from_ids=frozenset({375465077}))
++    assert policy.rejection_reason(from_id=375465077, data="DEC-1:yes") is None
++    assert policy.rejection_reason(from_id=42, data="DEC-1:yes") == "sender_not_allowed"
++
++
++def test_unknown_sender_rejected():
++    assert CallbackPolicy().rejection_reason(from_id=None, data="d") == "unknown_sender"
++
++
++def test_missing_data_rejected():
++    assert CallbackPolicy().rejection_reason(from_id=1, data=None) == "missing_data"
++    assert CallbackPolicy().rejection_reason(from_id=1, data="") == "missing_data"
++
++
++def test_data_pattern_enforced():
++    policy = CallbackPolicy(data_pattern=DEC)
++    assert policy.rejection_reason(from_id=1, data="DEC-12:yes") is None
++    assert (
++        policy.rejection_reason(from_id=1, data="DEC-12:maybe")
++        == "data_pattern_mismatch"
++    )
++    assert (
++        policy.rejection_reason(from_id=1, data="x DEC-12:yes")
++        == "data_pattern_mismatch"
++    )
++
++
++def test_from_settings_parses_env_config(monkeypatch):
++    monkeypatch.setenv("TELEGRAM_ALLOWED_CALLBACK_SENDERS", " 375465077, 42 ")
++    monkeypatch.setenv("TELEGRAM_CALLBACK_DATA_PATTERN", r"^DEC-\d+:(yes|no|later)$")
++    policy = CallbackPolicy.from_settings(Settings())
++    assert policy.allowed_from_ids == frozenset({375465077, 42})
++    assert policy.rejection_reason(from_id=42, data="DEC-3:later") is None
++    assert (
++        policy.rejection_reason(from_id=7, data="DEC-3:later") == "sender_not_allowed"
++    )
++
++
++def test_from_settings_without_config_is_permissive(monkeypatch):
++    monkeypatch.delenv("TELEGRAM_ALLOWED_CALLBACK_SENDERS", raising=False)
++    monkeypatch.delenv("TELEGRAM_CALLBACK_DATA_PATTERN", raising=False)
++    policy = CallbackPolicy.from_settings(Settings())
++    assert policy.allowed_from_ids == frozenset()
++    assert policy.data_pattern is None
++
++
++def test_from_settings_skips_garbage_entries(monkeypatch):
++    monkeypatch.setenv("TELEGRAM_ALLOWED_CALLBACK_SENDERS", "12; not-an-id ,34")
++    monkeypatch.setenv("TELEGRAM_CALLBACK_DATA_PATTERN", "([unclosed")
++    policy = CallbackPolicy.from_settings(Settings())
++    assert policy.allowed_from_ids == frozenset({12, 34})
++    assert policy.data_pattern is None
++
++
++# --- Cursor store ---
++
++
++def test_cursor_roundtrip_on_disk(tmp_path):
++    path = tmp_path / "state" / "callback_cursor.json"
++    store = CursorStore(path)
++    assert store.get("bot:1") is None
++
++    store.set("bot:1", 500)
++    assert store.get("bot:1") == 500
++    # A fresh instance reads the same file: the cursor survives a restart.
++    assert CursorStore(path).get("bot:1") == 500
++
++
++def test_cursor_is_per_scope(tmp_path):
++    store = CursorStore(tmp_path / "cursor.json")
++    store.set("bot:1", 10)
++    store.set("bot:2", 20)
++    assert store.get("bot:1") == 10
++    assert store.get("bot:2") == 20
++
++
++def test_cursor_falls_back_to_memory_without_path():
++    store = CursorStore()
++    store.set("bot:1", 7)
++    assert store.get("bot:1") == 7
++
++
++def test_cursor_survives_corrupt_file(tmp_path):
++    path = tmp_path / "cursor.json"
++    path.write_text("not json", encoding="utf-8")
++    store = CursorStore(path)
++    assert store.get("bot:1") is None
++    store.set("bot:1", 3)
++    assert store.get("bot:1") == 3
++
++
++def test_cursor_ignores_non_int_values(tmp_path):
++    path = tmp_path / "cursor.json"
++    path.write_text('{"bot:1": "nope"}', encoding="utf-8")
++    assert CursorStore(path).get("bot:1") is None
++
++
++def test_cursor_ignores_non_dict_file(tmp_path):
++    path = tmp_path / "cursor.json"
++    path.write_text("[1, 2]", encoding="utf-8")
++    assert CursorStore(path).get("bot:1") is None
++
++
++def test_cursor_keeps_working_when_path_unwritable(tmp_path):
++    # A file where a directory is expected makes every write fail.
++    blocked = tmp_path / "file.txt"
++    blocked.write_text("x", encoding="utf-8")
++    store = CursorStore(blocked / "nested" / "cursor.json")
++    store.set("bot:1", 9)
++    assert store.get("bot:1") == 9
++
++
++def test_default_context_is_permissive_and_in_memory():
++    ctx = CallbackContext.default()
++    assert ctx.policy.rejection_reason(from_id=1, data="d") is None
++    assert ctx.cursor.get("bot:1") is None
+diff --git a/tests/test_tools/test_messages.py b/tests/test_tools/test_messages.py
+index 25b7914..93990b8 100644
+--- a/tests/test_tools/test_messages.py
++++ b/tests/test_tools/test_messages.py
+@@ -13,7 +13,7 @@ async def test_send(mock_backend):
+     )
+     assert result["message_id"] == 1
+     mock_backend.send_message.assert_awaited_once_with(
+-        123, "hello", reply_to=None, parse_mode=None
++        123, "hello", reply_to=None, parse_mode=None, buttons=None
+     )
+ 
+ 
+@@ -31,7 +31,7 @@ async def test_send_with_reply_and_parse_mode(mock_backend):
+     )
+     assert result["message_id"] == 1
+     mock_backend.send_message.assert_awaited_once_with(
+-        123, "hi", reply_to=5, parse_mode="HTML"
++        123, "hi", reply_to=5, parse_mode="HTML", buttons=None
+     )
+ 
+ 
+@@ -54,7 +54,7 @@ async def test_edit(mock_backend):
+     )
+     assert result["message_id"] == 1
+     mock_backend.edit_message.assert_awaited_once_with(
+-        123, 1, "edited", parse_mode=None
++        123, 1, "edited", parse_mode=None, buttons=None
+     )
+ 
+ 
+@@ -207,4 +207,7 @@ async def test_unknown_action_suggestion(mock_backend):
+     assert "error" in result
+     assert "Unknown action 'sendd'." in result["error"]
+     assert "Did you mean 'send'?" in result["error"]
+-    assert "Valid: delete|edit|forward|history|pin|react|search|send" in result["error"]
++    assert (
++        "Valid: callbacks|delete|edit|forward|history|pin|react|search|send"
++        in result["error"]
++    )
+diff --git a/tests/test_tools/test_messages_callbacks.py b/tests/test_tools/test_messages_callbacks.py
+new file mode 100644
+index 0000000..089e072
+--- /dev/null
++++ b/tests/test_tools/test_messages_callbacks.py
+@@ -0,0 +1,278 @@
++from __future__ import annotations
++
++from typing import Any
++
++import pytest
++
++from better_telegram_mcp.callbacks import CallbackContext, CallbackPolicy, CursorStore
++from better_telegram_mcp.tools.messages import MessagesArgs, handle_messages
++
++BUTTONS = [
++    [
++        {"text": "✅ Да", "data": "DEC-12:yes"},
++        {"text": "✖️ Нет", "data": "DEC-12:no"},
++        {"text": "🕓 Потом", "data": "DEC-12:later"},
++    ]
++]
++
++OWNER = 375465077
++
++
++def _update(
++    update_id: int,
++    *,
++    data: str = "DEC-12:yes",
++    from_id: int = OWNER,
++    message_id: int = 4711,
++    date: int | None = 1787059391,
++) -> dict[str, Any]:
++    message: dict[str, Any] = {"message_id": message_id, "chat": {"id": from_id}}
++    if date is not None:
++        message["date"] = date
++    return {
++        "update_id": update_id,
++        "callback_query": {
++            "id": f"cq-{update_id}",
++            "data": data,
++            "from": {"id": from_id},
++            "message": message,
++        },
++    }
++
++
++def _ctx(**policy_kwargs: Any) -> CallbackContext:
++    return CallbackContext(
++        policy=CallbackPolicy(**policy_kwargs), cursor=CursorStore(None)
++    )
++
++
++# --- send/edit with buttons ---
++
++
++@pytest.mark.asyncio
++async def test_send_forwards_buttons(mock_backend):
++    await handle_messages(
++        mock_backend,
++        MessagesArgs(action="send", chat_id=OWNER, text="DEC-12?", buttons=BUTTONS),
++    )
++    mock_backend.send_message.assert_awaited_once_with(
++        OWNER, "DEC-12?", reply_to=None, parse_mode=None, buttons=BUTTONS
++    )
++
++
++@pytest.mark.asyncio
++async def test_send_reports_invalid_buttons_as_error(mock_backend):
++    mock_backend.send_message.side_effect = ValueError("callback_data too long")
++    result = await handle_messages(
++        mock_backend,
++        MessagesArgs(
++            action="send",
++            chat_id=OWNER,
++            text="x",
++            buttons=[[{"text": "Yes", "data": "x" * 65}]],
++        ),
++    )
++    assert "callback_data too long" in result["error"]
++
++
++@pytest.mark.asyncio
++async def test_edit_can_strip_buttons(mock_backend):
++    await handle_messages(
++        mock_backend,
++        MessagesArgs(
++            action="edit", chat_id=OWNER, message_id=4711, text="— ✅ да", buttons=[]
++        ),
++    )
++    mock_backend.edit_message.assert_awaited_once_with(
++        OWNER, 4711, "— ✅ да", parse_mode=None, buttons=[]
++    )
++
++
++# --- callbacks ---
++
++
++@pytest.mark.asyncio
++async def test_callbacks_returns_presses_and_acks_them(mock_backend):
++    mock_backend.get_updates.return_value = [_update(101)]
++
++    result = await handle_messages(
++        mock_backend, MessagesArgs(action="callbacks", ack_text="Принято"), _ctx()
++    )
++
++    assert result["count"] == 1
++    press = result["callbacks"][0]
++    assert press["update_id"] == 101
++    assert press["data"] == "DEC-12:yes"
++    assert press["from_id"] == OWNER
++    assert press["message_id"] == 4711
++    assert press["chat_id"] == OWNER
++    assert press["callback_query_id"] == "cq-101"
++    assert press["date"] == "2026-08-18T13:23:11Z"
++    assert press["answered"] is True
++    mock_backend.answer_callback_query.assert_awaited_once_with(
++        "cq-101", text="Принято"
++    )
++
++
++@pytest.mark.asyncio
++async def test_callbacks_uses_callback_query_filter_and_no_offset_when_fresh(
++    mock_backend,
++):
++    mock_backend.get_updates.return_value = []
++    await handle_messages(mock_backend, MessagesArgs(action="callbacks"), _ctx())
++    mock_backend.get_updates.assert_awaited_once_with(
++        offset=None, limit=20, allowed_updates=["callback_query"], timeout=0
++    )
++
++
++@pytest.mark.asyncio
++async def test_callbacks_advances_cursor_so_a_second_call_cannot_replay(mock_backend):
++    ctx = _ctx()
++    mock_backend.get_updates.return_value = [_update(101), _update(102)]
++    first = await handle_messages(mock_backend, MessagesArgs(action="callbacks"), ctx)
++    assert first["count"] == 2
++    assert first["cursor"] == 102
++
++    mock_backend.get_updates.reset_mock()
++    mock_backend.get_updates.return_value = []
++    second = await handle_messages(mock_backend, MessagesArgs(action="callbacks"), ctx)
++    assert second["count"] == 0
++    # offset = last consumed + 1, so Telegram never hands the press back.
++    mock_backend.get_updates.assert_awaited_once_with(
++        offset=103, limit=20, allowed_updates=["callback_query"], timeout=0
++    )
++
++
++@pytest.mark.asyncio
++async def test_explicit_since_id_overrides_stored_cursor(mock_backend):
++    ctx = _ctx()
++    ctx.cursor.set("bot", 500)
++    mock_backend.get_updates.return_value = []
++
++    await handle_messages(
++        mock_backend, MessagesArgs(action="callbacks", since_id=100), ctx
++    )
++    mock_backend.get_updates.assert_awaited_once_with(
++        offset=101, limit=20, allowed_updates=["callback_query"], timeout=0
++    )
++
++
++@pytest.mark.asyncio
++async def test_limit_is_clamped_to_bot_api_maximum(mock_backend):
++    mock_backend.get_updates.return_value = []
++    await handle_messages(
++        mock_backend, MessagesArgs(action="callbacks", limit=1000), _ctx()
++    )
++    assert mock_backend.get_updates.await_args.kwargs["limit"] == 100
++
++
++@pytest.mark.asyncio
++async def test_presses_from_other_users_are_ignored_and_not_acked(mock_backend):
++    mock_backend.get_updates.return_value = [
++        _update(101, from_id=999),
++        _update(102),
++    ]
++    result = await handle_messages(
++        mock_backend,
++        MessagesArgs(action="callbacks"),
++        _ctx(allowed_from_ids=frozenset({OWNER})),
++    )
++
++    assert result["count"] == 1
++    assert result["callbacks"][0]["update_id"] == 102
++    assert result["ignored"] == [
++        {"update_id": 101, "from_id": 999, "reason": "sender_not_allowed"}
++    ]
++    mock_backend.answer_callback_query.assert_awaited_once_with("cq-102", text=None)
++    # The intruder's update is still consumed, so it cannot come back.
++    assert result["cursor"] == 102
++
++
++@pytest.mark.asyncio
++async def test_malformed_callback_data_is_ignored(mock_backend):
++    import re
++
++    mock_backend.get_updates.return_value = [_update(101, data="drop table")]
++    result = await handle_messages(
++        mock_backend,
++        MessagesArgs(action="callbacks"),
++        _ctx(data_pattern=re.compile(r"^DEC-\d+:(yes|no|later)$")),
++    )
++    assert result["count"] == 0
++    assert result["ignored"][0]["reason"] == "data_pattern_mismatch"
++    mock_backend.answer_callback_query.assert_not_awaited()
++
++
++@pytest.mark.asyncio
++async def test_non_callback_updates_are_skipped_but_confirmed(mock_backend):
++    mock_backend.get_updates.return_value = [
++        {"update_id": 90, "message": {"message_id": 1, "text": "hi"}},
++        "garbage",
++        _update(91),
++    ]
++    result = await handle_messages(
++        mock_backend, MessagesArgs(action="callbacks"), _ctx()
++    )
++    assert result["count"] == 1
++    assert result["cursor"] == 91
++
++
++@pytest.mark.asyncio
++async def test_strip_buttons_removes_the_keyboard(mock_backend):
++    mock_backend.get_updates.return_value = [_update(101)]
++    result = await handle_messages(
++        mock_backend, MessagesArgs(action="callbacks", strip_buttons=True), _ctx()
++    )
++    assert result["callbacks"][0]["buttons_removed"] is True
++    mock_backend.set_message_reply_markup.assert_awaited_once_with(
++        OWNER, 4711, buttons=None
++    )
++
++
++@pytest.mark.asyncio
++async def test_strip_buttons_failure_does_not_drop_the_press(mock_backend):
++    mock_backend.get_updates.return_value = [_update(101)]
++    mock_backend.set_message_reply_markup.side_effect = RuntimeError("message gone")
++    result = await handle_messages(
++        mock_backend, MessagesArgs(action="callbacks", strip_buttons=True), _ctx()
++    )
++    assert result["count"] == 1
++    assert result["callbacks"][0]["buttons_removed"] is False
++
++
++@pytest.mark.asyncio
++async def test_failed_ack_is_reported_but_press_is_kept(mock_backend):
++    mock_backend.get_updates.return_value = [_update(101)]
++    mock_backend.answer_callback_query.side_effect = RuntimeError("query is too old")
++    result = await handle_messages(
++        mock_backend, MessagesArgs(action="callbacks"), _ctx()
++    )
++    assert result["count"] == 1
++    assert result["callbacks"][0]["answered"] is False
++
++
++@pytest.mark.asyncio
++async def test_press_without_message_date_has_null_date(mock_backend):
++    mock_backend.get_updates.return_value = [_update(101, date=None)]
++    result = await handle_messages(
++        mock_backend, MessagesArgs(action="callbacks"), _ctx()
++    )
++    assert result["callbacks"][0]["date"] is None
++
++
++@pytest.mark.asyncio
++async def test_callbacks_without_context_uses_permissive_default(mock_backend):
++    mock_backend.get_updates.return_value = [_update(101)]
++    result = await handle_messages(mock_backend, MessagesArgs(action="callbacks"))
++    assert result["count"] == 1
++
++
++@pytest.mark.asyncio
++async def test_callbacks_in_user_mode_reports_mode_error(mock_user_backend):
++    from better_telegram_mcp.backends.base import ModeError
++
++    mock_user_backend.get_updates.side_effect = ModeError("bot")
++    result = await handle_messages(
++        mock_user_backend, MessagesArgs(action="callbacks"), _ctx()
++    )
++    assert "bot mode" in result["error"]
+diff --git a/tests/test_utils/test_keyboard.py b/tests/test_utils/test_keyboard.py
+new file mode 100644
+index 0000000..78274f1
+--- /dev/null
++++ b/tests/test_utils/test_keyboard.py
+@@ -0,0 +1,97 @@
++from __future__ import annotations
++
++import pytest
++
++from better_telegram_mcp.utils.keyboard import (
++    MAX_BUTTONS_PER_ROW,
++    MAX_ROWS,
++    build_inline_keyboard,
++)
++
++
++def test_none_yields_no_markup():
++    assert build_inline_keyboard(None) is None
++
++
++def test_empty_list_yields_empty_keyboard():
++    # Telegram reads an empty inline_keyboard as "remove the buttons".
++    assert build_inline_keyboard([]) == {"inline_keyboard": []}
++
++
++def test_rows_are_mapped_to_callback_data():
++    markup = build_inline_keyboard(
++        [
++            [
++                {"text": "✅ Да", "data": "DEC-12:yes"},
++                {"text": "✖️ Нет", "data": "DEC-12:no"},
++            ],
++            [{"text": "🕓 Потом", "data": "DEC-12:later"}],
++        ]
++    )
++    assert markup == {
++        "inline_keyboard": [
++            [
++                {"text": "✅ Да", "callback_data": "DEC-12:yes"},
++                {"text": "✖️ Нет", "callback_data": "DEC-12:no"},
++            ],
++            [{"text": "🕓 Потом", "callback_data": "DEC-12:later"}],
++        ]
++    }
++
++
++def test_flat_list_is_treated_as_single_row():
++    markup = build_inline_keyboard([{"text": "Yes", "data": "d"}])
++    assert markup == {"inline_keyboard": [[{"text": "Yes", "callback_data": "d"}]]}
++
++
++def test_callback_data_alias_accepted():
++    markup = build_inline_keyboard([[{"text": "Yes", "callback_data": "d"}]])
++    assert markup == {"inline_keyboard": [[{"text": "Yes", "callback_data": "d"}]]}
++
++
++def test_rejects_non_list():
++    with pytest.raises(ValueError, match="list of rows"):
++        build_inline_keyboard({"text": "Yes", "data": "d"})
++
++
++def test_rejects_row_that_is_not_a_list():
++    with pytest.raises(ValueError, match="list of rows"):
++        build_inline_keyboard([[{"text": "a", "data": "b"}], "nope"])
++
++
++def test_rejects_non_dict_button():
++    with pytest.raises(ValueError, match="object"):
++        build_inline_keyboard([["Yes"]])
++
++
++def test_rejects_empty_text():
++    with pytest.raises(ValueError, match="non-empty"):
++        build_inline_keyboard([[{"text": "  ", "data": "d"}]])
++
++
++def test_rejects_missing_data():
++    with pytest.raises(ValueError, match="callback_data"):
++        build_inline_keyboard([[{"text": "Yes"}]])
++
++
++def test_rejects_oversized_callback_data():
++    # 64 bytes is the Bot API cap; these Cyrillic chars are 2 bytes each.
++    with pytest.raises(ValueError, match="65 bytes"):
++        build_inline_keyboard([[{"text": "Yes", "data": "я" * 32 + "x"}]])
++
++
++def test_accepts_callback_data_at_the_limit():
++    markup = build_inline_keyboard([[{"text": "Yes", "data": "x" * 64}]])
++    assert markup == {"inline_keyboard": [[{"text": "Yes", "callback_data": "x" * 64}]]}
++
++
++def test_rejects_too_many_buttons_per_row():
++    row = [{"text": f"b{i}", "data": f"d{i}"} for i in range(MAX_BUTTONS_PER_ROW + 1)]
++    with pytest.raises(ValueError, match="too many buttons in a row"):
++        build_inline_keyboard([row])
++
++
++def test_rejects_too_many_rows():
++    rows = [[{"text": "b", "data": "d"}] for _ in range(MAX_ROWS + 1)]
++    with pytest.raises(ValueError, match="too many button rows"):
++        build_inline_keyboard(rows)
+-- 
+2.43.0
+
