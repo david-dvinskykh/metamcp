@@ -430,12 +430,62 @@ and audit logging apply exactly as they would to a direct call.
 | `GOOGLE_DRIVE_CLIENT_ID` / `GOOGLE_DRIVE_CLIENT_SECRET` / `GOOGLE_DRIVE_REFRESH_TOKEN` | – | Drive credentials (user OAuth). |
 | `GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON` | – | Drive credentials (service account, alternative to the above). |
 | `GOOGLE_DRIVE_SUBJECT` | – | User to impersonate with a domain-wide-delegation service account. |
+| `GOOGLE_DRIVE_SCOPE` | `…/auth/drive.file` | Scope requested for service-account credentials. |
 | `GOOGLE_DRIVE_DEFAULT_FOLDER_ID` | – | Folder used when a Drive destination does not name one. |
 
-Getting a Drive refresh token: create an OAuth client (Desktop app) in Google Cloud, enable
-the Drive API, and complete the consent flow once with the `https://www.googleapis.com/auth/drive.file`
-scope. `drive.file` only grants access to files the app itself created, which is the right
-scope for an upload bridge.
+### 🔑 Connecting Google Drive
+
+The relay talks to the Drive REST API with the deployment's own credentials, so there is
+nothing to authorise per request. Pick one of the two credential types.
+
+**Personal account / Gmail — OAuth refresh token (recommended):**
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create (or pick) a project
+   and enable the **Google Drive API** under *APIs & Services → Library*.
+2. *APIs & Services → OAuth consent screen*: choose **External**, fill in the app name and
+   your own email, and add yourself under **Test users**. Then press **Publish app**: while
+   the consent screen stays in *Testing*, Google expires every refresh token after 7 days,
+   which would break the relay each week. A published app used only by its owner does not
+   need Google's verification review for this to work.
+3. *APIs & Services → Credentials → Create credentials → OAuth client ID*, application type
+   **Web application**, and add `http://localhost:53682` as an **Authorized redirect URI**.
+4. Run the helper from the repo root and open the URL it prints:
+
+   ```bash
+   node scripts/google-drive-auth.mjs --client-id <id> --client-secret <secret>
+   # uploading into a folder you did not create with this app:
+   node scripts/google-drive-auth.mjs --scope drive
+   ```
+
+   It listens on `127.0.0.1`, catches Google's callback and prints the three `.env` lines.
+5. Paste them into `.env`, add `GOOGLE_DRIVE_DEFAULT_FOLDER_ID` if you want a default target
+   folder (the ID is the last path segment of the folder's URL:
+   `https://drive.google.com/drive/folders/`**`1AbCdEf...`**), then restart MetaMCP
+   (`docker compose up -d`).
+
+**Google Workspace — service account:**
+
+1. Create a service account, generate a JSON key, and put it in
+   `GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON` as a single line.
+2. Either share the target folder with the service account's email address (works for a
+   **Shared Drive**), or enable domain-wide delegation and set `GOOGLE_DRIVE_SUBJECT` to the
+   user to impersonate.
+3. Set `GOOGLE_DRIVE_SCOPE=https://www.googleapis.com/auth/drive` when the target folder was
+   not created by the relay itself.
+
+A service account has no storage quota of its own: uploading into a folder in someone's
+personal *My Drive* fails with `Service Accounts do not have storage quota`. Use a Shared
+Drive, impersonation, or the refresh-token flow instead.
+
+**Scopes.** `drive.file` (the default) only reaches files the relay created, which is the
+right least-privilege choice when you let it upload into *My Drive* root or into folders it
+created. Targeting a pre-existing folder by ID needs the broader
+`https://www.googleapis.com/auth/drive`.
+
+**Check it worked.** Restart, reconnect your MCP client, and call
+`metamcp-files__transfer_file` — the tool's description ends with "Google Drive is configured
+on this server" once the credentials are picked up. A missing or wrong credential comes back
+as a plain error message from the tool rather than a silent failure.
 
 ### 🔒 Notes on safety
 

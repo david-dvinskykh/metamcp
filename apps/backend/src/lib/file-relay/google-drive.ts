@@ -5,6 +5,7 @@ import logger from "@/utils/logger";
 import {
   getGoogleDriveCredentials,
   getGoogleDriveDefaultFolderId,
+  getGoogleDriveScope,
   GoogleDriveCredentials,
 } from "./config";
 import { FileRelayError } from "./errors";
@@ -14,7 +15,6 @@ import { StagedFile, stagingStore } from "./staging-store";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const UPLOAD_ENDPOINT =
   "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true";
-const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const RETURNED_FIELDS =
   "id,name,mimeType,size,webViewLink,webContentLink,parents";
 
@@ -81,7 +81,7 @@ function buildServiceAccountAssertion(
   const claims = base64Url(
     JSON.stringify({
       iss: credentials.clientEmail,
-      scope: DRIVE_SCOPE,
+      scope: getGoogleDriveScope(),
       aud: TOKEN_ENDPOINT,
       iat: issuedAt,
       exp: issuedAt + 3600,

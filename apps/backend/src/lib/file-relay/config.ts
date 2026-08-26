@@ -153,6 +153,21 @@ export function getGoogleDriveCredentials():
   return undefined;
 }
 
+/**
+ * OAuth scope requested for service-account credentials.
+ *
+ * `drive.file` (the default) only reaches files the relay itself created, so a
+ * deployment that uploads into a pre-existing folder needs the broader
+ * `https://www.googleapis.com/auth/drive`. The refresh-token flow ignores this:
+ * its scope is fixed when the user grants consent.
+ */
+export function getGoogleDriveScope(): string {
+  return (
+    process.env.GOOGLE_DRIVE_SCOPE?.trim() ||
+    "https://www.googleapis.com/auth/drive.file"
+  );
+}
+
 /** Folder used when a Drive destination does not name one. */
 export function getGoogleDriveDefaultFolderId(): string | undefined {
   return process.env.GOOGLE_DRIVE_DEFAULT_FOLDER_ID?.trim() || undefined;
