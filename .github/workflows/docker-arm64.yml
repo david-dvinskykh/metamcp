@@ -194,7 +194,7 @@ jobs:
             command -v lightpanda-mcp
             # версия должна совпадать с LIGHTPANDA_VERSION: nightly-тег
             # переписывается, и подмена релиза иначе прошла бы незаметно
-            test "$(lightpanda version)" = "0.3.6"
+            test "$(lightpanda version)" = "0.3.7"
             # ровно та регрессия, из-за которой сервер и переехал в образ:
             # mcp 2.0 убрал mcp.server.fastmcp, а пакет верхнюю границу не ставит
             # ничто в кэше uv не должно принадлежать root: иначе uv run от

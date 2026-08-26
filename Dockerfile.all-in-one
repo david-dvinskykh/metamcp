@@ -9,7 +9,7 @@
 #   zenmoney-mcp-ddvin — форк david-dvinskykh, сборка по package-lock.json
 #   one-zenwallet-mcp  — david-dvinskykh/one-zenwallet, каталог mcp-server
 #   portainer-mcp      — strnad/portainer-mcp v0.6.1, Go-бинарник из релизов
-#   lightpanda-mcp     — lightpanda-io/browser 0.3.6, встроенный MCP-режим
+#   lightpanda-mcp     — lightpanda-io/browser 0.3.7, встроенный MCP-режим
 #   metamcp-admin      — НЕ ВКЛЮЧЁН: репозиторий удалён с GitHub, см. блок ниже
 #
 # Контекст сборки не нужен — все исходники клонируются внутри.
@@ -64,10 +64,10 @@ ARG ONE_ZENWALLET_COMMIT=3c555f57bf4c98dc7279611ffc82453cdb93f0d2
 ARG PORTAINER_MCP_VERSION=0.6.1
 
 # lightpanda-io/browser — безголовый браузер на Zig со встроенным MCP-сервером
-# (`lightpanda mcp`, stdio по умолчанию). 0.3.6 @ 2026-07-25 — последний
+# (`lightpanda mcp`, stdio по умолчанию). 0.3.7 @ 2026-08-16 — последний
 # нумерованный релиз; тег nightly брать нельзя, он переписывается и образ
 # перестаёт быть воспроизводимым.
-ARG LIGHTPANDA_VERSION=0.3.6
+ARG LIGHTPANDA_VERSION=0.3.7
 
 # ===========================================================================
 # base — как в апстриме: uv + Node 20 + pnpm
@@ -249,9 +249,9 @@ ARG LIGHTPANDA_VERSION
 # TARGETARCH проставляет только BuildKit — см. комментарий в portainer-fetcher.
 ARG TARGETARCH=""
 
-# SHA256 бинарников релиза 0.3.6, проверены вручную 2026-08-14.
-ARG SHA256_AMD64=e438c0ad44e0f6916c14cf13beb003512c60438d8fd200738d2e596e73f652d6
-ARG SHA256_ARM64=29c059cd0755a195350cc79dbcf7ee9580fd575ec3eaa31db755dbada417e616
+# SHA256 бинарников релиза 0.3.7, проверены вручную 2026-08-26.
+ARG SHA256_AMD64=895339b02205171a181dde743ae0068bb4564884076feac8482baca9c212aa5a
+ARG SHA256_ARM64=4c0ecb28b4fcfb6d5bce82ec86e15fc6cde89cea168cf3840494f0ee26755852
 
 # Запуск скачанного бинарника проверяем только при нативной сборке: при
 # кросс-сборке в файле чужой ELF и exec падает на «Exec format error».
