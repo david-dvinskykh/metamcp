@@ -1,0 +1,591 @@
+# MetaMCP + все MCP-серверы в одном Dockerfile
+#
+#   metamcp            — metatool-ai/metamcp @ ai-dev (сборка из исходников)
+#                        либо готовый образ — переключается через METAMCP_BASE
+#   telegram-mcp       — chigwell/telegram-mcp (Python, uv sync по uv.lock)
+#   better-telegram-mcp— PyPI-пакет, ставится uv tool install, версия зафиксирована
+#   mcp-instagram-dm   — npm-пакет, версия зафиксирована
+#   zenmoney-mcp       — npm-пакет zenmoney-mcp, версия зафиксирована
+#   zenmoney-mcp-ddvin — форк david-dvinskykh, сборка по package-lock.json
+#   one-zenwallet-mcp  — david-dvinskykh/one-zenwallet, каталог mcp-server
+#   portainer-mcp      — strnad/portainer-mcp v0.6.1, Go-бинарник из релизов
+#   lightpanda-mcp     — lightpanda-io/browser 0.3.7, встроенный MCP-режим
+#   metamcp-admin      — НЕ ВКЛЮЧЁН: репозиторий удалён с GitHub, см. блок ниже
+#
+# Контекст сборки не нужен — все исходники клонируются внутри.
+#
+#   # MetaMCP из ветки ai-dev (по умолчанию):
+#   docker build -f Dockerfile.all-in-one -t metamcp-aidev:latest .
+#
+#   # На готовом образе — быстрее, но без ai-dev:
+#   docker build -f Dockerfile.all-in-one --build-arg METAMCP_BASE=prebuilt -t metamcp-aidev:latest .
+#
+# Сборка в CI: .github/workflows/docker-arm64.yml (linux/arm64 → GHCR).
+#
+# Все внешние источники зафиксированы по коммиту или точной версии.
+# Ни один сервер не тянется из сети при старте контейнера.
+
+# source | prebuilt
+ARG METAMCP_BASE=source
+
+ARG METAMCP_PREBUILT_IMAGE=ghcr.io/metatool-ai/metamcp:latest
+ARG METAMCP_REPO=https://github.com/metatool-ai/metamcp.git
+# ai-dev @ 2026-06-23 «Update README.md». Ветка движется — коммит зафиксирован.
+ARG METAMCP_COMMIT=ff4ff2de9d25453c52dcc7be32680b30700a6012
+# Соответствует полю packageManager в package.json ветки ai-dev.
+# Апстримный Dockerfile ставит 10.12.0 и расходится с манифестом.
+ARG PNPM_VERSION=10.29.3
+
+# chigwell/telegram-mcp @ main на 2026-07-27 12:47 (PR #168, exposed-tools-allowlist).
+# У ветки нет тегов и она активно движется — без пина пересборка молча меняет
+# версию сервера.
+ARG TELEGRAM_MCP_COMMIT=7ea0adc8d0535e8dae02d07587d44321cca0db09
+
+# n24q02m/better-telegram-mcp. Пакет требует ровно Python 3.13
+# (Requires-Python ==3.13.*) — системный python3 в trixie как раз 3.13.
+ARG BETTER_TELEGRAM_MCP_VERSION=4.17.0
+
+ARG INSTAGRAM_DM_VERSION=2.1.1
+ARG ZENMONEY_NPM_VERSION=0.3.1
+# 0.6.0 @ 2026-08-22 «Merge reminder tools with the edit/debt line» — к
+# list_reminders и delete_reminder добавляются update_transaction и add_debt.
+# Ветки форка разошлись: напоминания жили только в
+# claude/zenmoney-ddvin-mcp-update-x4ttod, правки и долги — только в main;
+# 0.6.0 сводит их вместе. Коммит лежит в ветке
+# claude/zenmoney-mcp-version-update-6t44bk, не в main; GitHub отдаёт его по
+# SHA, потому что он достижим из ветки.
+# В npm пакет так и не выложен (registry отдаёт 404), поэтому собираем из git.
+ARG ZENMONEY_DDVIN_COMMIT=25c409a97b9fbe09738f85ce93843e060b3d8800
+
+# david-dvinskykh/one-zenwallet @ main на 2026-07-31 («Support running the MCP
+# server via npx»). Репозиторий активно движется, тегов нет — пин по коммиту.
+ARG ONE_ZENWALLET_COMMIT=3c555f57bf4c98dc7279611ffc82453cdb93f0d2
+
+ARG PORTAINER_MCP_VERSION=0.6.1
+
+# lightpanda-io/browser — безголовый браузер на Zig со встроенным MCP-сервером
+# (`lightpanda mcp`, stdio по умолчанию). 0.3.7 @ 2026-08-16 — последний
+# нумерованный релиз; тег nightly брать нельзя, он переписывается и образ
+# перестаёт быть воспроизводимым.
+ARG LIGHTPANDA_VERSION=0.3.7
+
+# ===========================================================================
+# base — как в апстриме: uv + Node 20 + pnpm
+# ===========================================================================
+FROM ghcr.io/astral-sh/uv:debian AS base
+
+ARG PNPM_VERSION
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends curl gnupg ca-certificates git; \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -; \
+    apt-get install -y --no-install-recommends nodejs; \
+    npm install -g "pnpm@${PNPM_VERSION}"; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+# ===========================================================================
+# metamcp-builder — клон ветки, установка зависимостей, сборка
+# ===========================================================================
+FROM base AS metamcp-builder
+
+ARG METAMCP_REPO
+ARG METAMCP_COMMIT
+
+ENV NEXT_TELEMETRY_DISABLED=1
+
+WORKDIR /app
+
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "${METAMCP_REPO}"; \
+    git fetch -q --depth 1 origin "${METAMCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    rm -rf .git
+
+RUN pnpm install --frozen-lockfile
+RUN pnpm build
+
+# drizzle-kit нужен рантайму: docker-entrypoint.sh гоняет им миграции
+# (`pnpm exec drizzle-kit migrate` из apps/backend).
+#
+# Ставим здесь, а не в рантайм-стадии: там node_modules уже prod-only, а
+# `pnpm add` тянет ещё и dev-зависимости и падает с ERR_PNPM_INCLUDED_DEPS_CONFLICT.
+#
+# --save-prod обязателен. В package.json бэкенда drizzle-kit уже лежит в
+# devDependencies, и обычный `pnpm add` просто обновляет запись на месте,
+# оставляя пакет dev-зависимостью, — prod-установка в рантайм-стадии его
+# выбрасывает, и миграции падают на «Command drizzle-kit not found».
+# С --save-prod пакет переезжает в dependencies, --save-exact фиксирует
+# версию (по умолчанию pnpm сохранил бы диапазон ^0.31.1).
+RUN cd apps/backend && pnpm add --save-prod --save-exact drizzle-kit@0.31.1
+
+# ===========================================================================
+# metamcp-source — runtime-слой MetaMCP, собранный из исходников
+# ===========================================================================
+FROM base AS metamcp-source
+
+WORKDIR /app
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends curl postgresql-client; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    addgroup --system --gid 1001 nodejs; \
+    adduser --system --uid 1001 --home /home/nextjs nextjs; \
+    mkdir -p /home/nextjs/.cache/node/corepack /home/nextjs/.cache/uv; \
+    chown -R nextjs:nodejs /home/nextjs
+
+COPY --from=metamcp-builder --chown=nextjs:nodejs /app/apps/frontend/.next        ./apps/frontend/.next
+COPY --from=metamcp-builder --chown=nextjs:nodejs /app/apps/frontend/package.json ./apps/frontend/
+COPY --from=metamcp-builder --chown=nextjs:nodejs /app/apps/backend/dist          ./apps/backend/dist
+COPY --from=metamcp-builder --chown=nextjs:nodejs /app/apps/backend/package.json  ./apps/backend/
+COPY --from=metamcp-builder --chown=nextjs:nodejs /app/apps/backend/drizzle       ./apps/backend/drizzle
+COPY --from=metamcp-builder --chown=nextjs:nodejs /app/apps/backend/drizzle.config.ts ./apps/backend/
+COPY --from=metamcp-builder --chown=nextjs:nodejs /app/packages                   ./packages
+COPY --from=metamcp-builder --chown=nextjs:nodejs /app/node_modules               ./node_modules
+COPY --from=metamcp-builder --chown=nextjs:nodejs /app/package.json               ./
+COPY --from=metamcp-builder --chown=nextjs:nodejs /app/pnpm-workspace.yaml        ./
+# Лок-файл нужен здесь, а не только в билдере: без него pnpm не может выкинуть
+# dev-зависимости из готового node_modules «на месте» и уходит в полную
+# переустановку с неизвестно какими версиями.
+COPY --from=metamcp-builder --chown=nextjs:nodejs /app/pnpm-lock.yaml             ./
+COPY --from=metamcp-builder --chown=nextjs:nodejs /app/docker-entrypoint.sh       ./
+
+# CI=true обязателен. node_modules приехал из билдера со всеми dev-зависимостями,
+# а тут ставится только prod — состав пакетов не сходится с .modules.yaml, pnpm
+# решает пересоздать каталог и спрашивает подтверждения. В docker build нет TTY,
+# и без CI=true установка падает с ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY.
+# --frozen-lockfile гарантирует, что и при пересоздании каталога версии
+# останутся ровно те, с которыми собирали.
+RUN CI=true pnpm install --prod --frozen-lockfile
+RUN chmod +x docker-entrypoint.sh
+
+# --- ПАТЧ NEXT ------------------------------------------------------------
+# Апстрим поднимает таймаут прокси Next.js с 30 с до 600 с — без этого длинные
+# вызовы MCP обрываются. Но путь захардкожен под react 19.1.2:
+#
+#   node_modules/.pnpm/next@15.5.12_react-dom@19.1.2_react@19.1.2__react@19.1.2/...
+#
+# В ветке ai-dev lock-файл уехал на react 19.2.4, каталог называется иначе,
+# и `sed -i` падает на несуществующем файле — сборка апстримного Dockerfile
+# на этой ветке ломается именно здесь (проверено 2026-07-27).
+#
+# Патчим ПОСЛЕ pnpm install/add, а не в билдере: обе команды выше могут
+# пересоздать node_modules и распаковать next из стора заново. Пропатченный
+# в билдере файл при этом молча заменяется на исходный, сборка остаётся
+# зелёной, а таймаут возвращается к 30 с.
+RUN set -eux; \
+    found=0; \
+    for f in $(find node_modules/.pnpm -type f \
+                 -path '*/node_modules/next/dist/*server/lib/router-utils/proxy-request.js'); do \
+      sed -i -e "s/30000/600000/" "$f"; \
+      found=$((found + 1)); \
+    done; \
+    echo "patched proxy-request.js: ${found}"; \
+    [ "${found}" -ge 2 ] || { echo "ожидалось >=2 файла, найдено ${found}" >&2; exit 1; }
+
+# ===========================================================================
+# metamcp-prebuilt — тот же runtime-слой, но из готового образа
+# ===========================================================================
+FROM ${METAMCP_PREBUILT_IMAGE} AS metamcp-prebuilt
+
+# ===========================================================================
+# portainer-fetcher — бинарник portainer-mcp с проверкой контрольной суммы
+# ===========================================================================
+FROM debian:trixie-slim AS portainer-fetcher
+
+ARG PORTAINER_MCP_VERSION
+# TARGETARCH проставляет только BuildKit. Классический сборщик (его использует
+# Portainer в «Build a new image») оставляет переменную пустой, поэтому ниже
+# есть запасной путь через uname -m. Значение можно и передать явно:
+#   --build-arg TARGETARCH=arm64
+ARG TARGETARCH=""
+
+# SHA256 архивов релиза v0.6.1, проверены вручную 2026-07-27.
+ARG SHA256_AMD64=7a9410d8782b72194dc0e29e7dc3b8f7778297c52f7808d86d18e1b6ec5532b8
+ARG SHA256_ARM64=67e885367e1cbc151fddddc8abde2c1704bfad677d72a918e9328d68793a53f7
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    rm -rf /var/lib/apt/lists/*; \
+    arch="${TARGETARCH}"; \
+    if [ -z "${arch}" ]; then \
+      case "$(uname -m)" in \
+        x86_64)  arch=amd64 ;; \
+        aarch64) arch=arm64 ;; \
+        *) echo "не удалось определить архитектуру: $(uname -m)" >&2; exit 1 ;; \
+      esac; \
+      echo "TARGETARCH пуст (сборка без BuildKit), определил по uname: ${arch}"; \
+    fi; \
+    case "${arch}" in \
+      amd64) sha="${SHA256_AMD64}" ;; \
+      arm64) sha="${SHA256_ARM64}" ;; \
+      *) echo "unsupported arch: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/strnad/portainer-mcp/releases/download/v${PORTAINER_MCP_VERSION}/portainer-mcp-v${PORTAINER_MCP_VERSION}-linux-${arch}.tar.gz"; \
+    curl -fsSL --retry 3 --retry-delay 2 -o /tmp/pm.tgz "${url}"; \
+    echo "${sha}  /tmp/pm.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/pm.tgz -C /tmp; \
+    chmod 0755 /tmp/portainer-mcp; \
+    /tmp/portainer-mcp -h 2>&1 | grep -q -- '-disable-version-check'
+
+# ===========================================================================
+# lightpanda-fetcher — бинарник браузера с проверкой контрольной суммы
+# ===========================================================================
+#
+# Релиз отдаёт голый ELF без архива: lightpanda-<arch>-linux (~150 МБ).
+# Зависимостей у него всего две — libc и libm, обе есть в trixie
+# (бинарник требует GLIBC_2.34, в trixie 2.41).
+#
+FROM debian:trixie-slim AS lightpanda-fetcher
+
+ARG LIGHTPANDA_VERSION
+# TARGETARCH проставляет только BuildKit — см. комментарий в portainer-fetcher.
+ARG TARGETARCH=""
+
+# SHA256 бинарников релиза 0.3.7, проверены вручную 2026-08-26.
+ARG SHA256_AMD64=895339b02205171a181dde743ae0068bb4564884076feac8482baca9c212aa5a
+ARG SHA256_ARM64=4c0ecb28b4fcfb6d5bce82ec86e15fc6cde89cea168cf3840494f0ee26755852
+
+# Запуск скачанного бинарника проверяем только при нативной сборке: при
+# кросс-сборке в файле чужой ELF и exec падает на «Exec format error».
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    rm -rf /var/lib/apt/lists/*; \
+    arch="${TARGETARCH}"; \
+    if [ -z "${arch}" ]; then \
+      case "$(uname -m)" in \
+        x86_64)  arch=amd64 ;; \
+        aarch64) arch=arm64 ;; \
+        *) echo "не удалось определить архитектуру: $(uname -m)" >&2; exit 1 ;; \
+      esac; \
+      echo "TARGETARCH пуст (сборка без BuildKit), определил по uname: ${arch}"; \
+    fi; \
+    case "${arch}" in \
+      amd64) sha="${SHA256_AMD64}"; asset=lightpanda-x86_64-linux ;; \
+      arm64) sha="${SHA256_ARM64}"; asset=lightpanda-aarch64-linux ;; \
+      *) echo "unsupported arch: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/lightpanda-io/browser/releases/download/${LIGHTPANDA_VERSION}/${asset}"; \
+    curl -fsSL --retry 3 --retry-delay 2 -o /tmp/lightpanda "${url}"; \
+    echo "${sha}  /tmp/lightpanda" | sha256sum -c -; \
+    chmod 0755 /tmp/lightpanda; \
+    host=""; \
+    case "$(uname -m)" in \
+      x86_64)  host=amd64 ;; \
+      aarch64) host=arm64 ;; \
+    esac; \
+    if [ "${host}" = "${arch}" ]; then \
+      test "$(/tmp/lightpanda version)" = "${LIGHTPANDA_VERSION}"; \
+      /tmp/lightpanda mcp --help 2>&1 | grep -q -- '--cdp-port'; \
+    fi
+
+# ===========================================================================
+# zenmoney-ddvin-builder — форк, сборка СТРОГО по package-lock.json
+# ===========================================================================
+#
+# `npx -y github:david-dvinskykh/zenmoney-mcp-Ddvin` не собирается: npm при
+# установке из git игнорирует package-lock.json, тянет свежий zod 4.x с другим
+# выводом типов, и хук prepare (tsc) падает на TS7031. `npm ci` по лок-файлу
+# (zod 4.3.6, typescript 5.9.3) проходит чисто.
+#
+FROM node:20-bookworm-slim AS zenmoney-ddvin-builder
+
+ARG ZENMONEY_DDVIN_COMMIT
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates git; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin https://github.com/david-dvinskykh/zenmoney-mcp-Ddvin.git; \
+    git fetch -q --depth 1 origin "${ZENMONEY_DDVIN_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    test -f package-lock.json || { echo "нет package-lock.json — сборка недетерминирована" >&2; exit 1; }; \
+    npm ci; \
+    npm run build; \
+    test -f build/index.js; \
+    npm prune --omit=dev; \
+    rm -rf .git src test .github
+
+# ===========================================================================
+# one-zenwallet-builder — MCP-сервер из репозитория приложения one-zenwallet
+# ===========================================================================
+#
+# В npm пакета нет (registry отдаёт 404 на one-zenwallet-mcp), поэтому собираем
+# из git. Сам сервер лежит в подкаталоге mcp-server, но собирается скриптами
+# корневого package.json: `npm ci` ставит devDependencies и хук prepare гоняет
+# esbuild, который кладёт бандл в mcp-server/dist/server.js.
+#
+# --legacy-peer-deps обязателен: react 19 не проходит peer-диапазон
+# vite-plugin-pwa, и обычный `npm ci` падает на ERESOLVE. Их собственный CI
+# ставит зависимости так же.
+#
+FROM node:20-bookworm-slim AS one-zenwallet-builder
+
+ARG ONE_ZENWALLET_COMMIT
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates git; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin https://github.com/david-dvinskykh/one-zenwallet.git; \
+    git fetch -q --depth 1 origin "${ONE_ZENWALLET_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    test -f package-lock.json || { echo "нет package-lock.json — сборка недетерминирована" >&2; exit 1; }; \
+    npm ci --legacy-peer-deps; \
+    test -f mcp-server/dist/server.js
+
+# Бандл собран с --packages=external, наружу у него ровно два импорта:
+# @modelcontextprotocol/sdk и zod. Тащить в образ всё prod-дерево приложения
+# (257 МБ: react, react-router, vite-plugin-pwa, workbox) незачем — собираем
+# минимальную раскладку на 27 МБ.
+#
+# package.json из mcp-server копируется не для красоты: в нём "type": "module",
+# без него node прочитает ESM-бандл как CommonJS и упадёт на первом import.
+#
+# Версии берём из package-lock.json репозитория, иначе диапазоны ^ уедут при
+# следующей пересборке.
+RUN set -eux; \
+    mkdir -p /out; \
+    cp /src/mcp-server/package.json /out/; \
+    cp -r /src/mcp-server/dist /out/dist; \
+    grep -q '"type"[[:space:]]*:[[:space:]]*"module"' /out/package.json; \
+    sdk="$(node -p "require('/src/package-lock.json').packages['node_modules/@modelcontextprotocol/sdk'].version")"; \
+    zod="$(node -p "require('/src/package-lock.json').packages['node_modules/zod'].version")"; \
+    echo "sdk=${sdk} zod=${zod}"; \
+    cd /out; \
+    npm install --omit=dev --ignore-scripts --no-audit --no-fund --no-package-lock \
+      "@modelcontextprotocol/sdk@${sdk}" "zod@${zod}"; \
+    test -f /out/node_modules/zod/package.json; \
+    test -d /out/node_modules/@modelcontextprotocol/sdk
+
+# ===========================================================================
+# runner — итоговый образ поверх выбранного варианта MetaMCP
+# ===========================================================================
+#
+# Имя стадии подставляется из METAMCP_BASE: metamcp-source | metamcp-prebuilt.
+# BuildKit собирает только ту ветку, которая реально нужна, — при
+# METAMCP_BASE=prebuilt стадии сборки исходников не выполняются вообще.
+#
+FROM metamcp-${METAMCP_BASE} AS runner
+
+ARG TELEGRAM_MCP_COMMIT
+ARG BETTER_TELEGRAM_MCP_VERSION
+ARG INSTAGRAM_DM_VERSION
+ARG ZENMONEY_NPM_VERSION
+
+USER root
+WORKDIR /app
+
+LABEL org.opencontainers.image.source="https://github.com/metatool-ai/metamcp"
+LABEL org.opencontainers.image.description="MetaMCP с предустановленными telegram, instagram, zenmoney, one-zenwallet, portainer и lightpanda MCP"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.title="MetaMCP custom"
+
+# python3 нужен для telegram-mcp. Ставим системный — в trixie это 3.13
+# (telegram-mcp требует >=3.10, better-telegram-mcp — ровно 3.13).
+#
+# Всем uv-командам ниже передаётся UV_PYTHON_DOWNLOADS=never, но именно
+# построчно, а не через ENV: сборка идёт от root, и скачанный ею интерпретатор
+# лёг бы в /root, недоступный процессу от nextjs. В рантайме запрет наоборот
+# вреден — MCP-серверу, добавленному через UI (`uvx ...`) и требующему другую
+# версию Python, нужно уметь её скачать. Каталог uv для этого есть и доступен
+# на запись: /home/nextjs/.local/share/uv/python.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends python3; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+# --- telegram-mcp ---------------------------------------------------------
+ENV UV_CACHE_DIR=/home/nextjs/.cache/uv
+
+RUN set -eux; \
+    mkdir -p /home/nextjs/.cache/uv; \
+    git init -q /opt/telegram-mcp; \
+    cd /opt/telegram-mcp; \
+    git remote add origin https://github.com/chigwell/telegram-mcp.git; \
+    git fetch -q --depth 1 origin "${TELEGRAM_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    rm -rf .git tests screenshots; \
+    test -f uv.lock; \
+    UV_PYTHON_DOWNLOADS=never uv sync --frozen --no-dev --python /usr/bin/python3; \
+    chown -R nextjs:nodejs /opt/telegram-mcp /home/nextjs/.cache/uv
+
+# --- better-telegram-mcp --------------------------------------------------
+# Ставим в образ вместо `uvx better-telegram-mcp` в конфиге MetaMCP.
+#
+# uvx резолвит зависимости при каждом запуске с пустым кэшем — а кэш обнуляется
+# при любом пересоздании контейнера. 2026-07-31 это уронило сервер: вышел
+# mcp 2.0.0, где убран модуль mcp.server.fastmcp, а пакет требует всего лишь
+# mcp[cli]>=1.28.1, без верхней границы. Отсюда `--with "mcp[cli]<2.0"`.
+#
+# UV_TOOL_BIN_DIR=/usr/local/bin задан ещё в базовом образе uv, поэтому
+# консольная команда better-telegram-mcp сама оказывается в PATH.
+ENV UV_TOOL_DIR=/opt/uv-tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin
+
+# chown кэша в конце — ОБЯЗАТЕЛЬНО, а не гигиена. `uv tool install` идёт от
+# root и пишет в общий UV_CACHE_DIR, который лежит в /home/nextjs. Без возврата
+# владельца telegram-mcp, запускаемый от nextjs, падает на `uv run` с
+# "failed to symlink ... Permission denied (os error 13)" — ему не разложить
+# пакеты из root-овых каталогов кэша. Проверено на живом контейнере 2026-07-31.
+RUN set -eux; \
+    UV_PYTHON_DOWNLOADS=never uv tool install --python /usr/bin/python3 \
+      --with "mcp[cli]<2.0" \
+      "better-telegram-mcp==${BETTER_TELEGRAM_MCP_VERSION}"; \
+    chown -R nextjs:nodejs /opt/uv-tools "${UV_CACHE_DIR}"; \
+    command -v better-telegram-mcp; \
+    py="$(ls -d /opt/uv-tools/*/bin/python | head -1)"; \
+    test -n "${py}"; \
+    "${py}" -c "import better_telegram_mcp, mcp.server.fastmcp"; \
+    "${py}" -c "import importlib.metadata as m; v=m.version('mcp'); assert int(v.split('.')[0]) < 2, v; print('mcp', v)"
+
+# --- npm-серверы ----------------------------------------------------------
+# Версии зафиксированы: `npm install -g <pkg>` без версии при каждой пересборке
+# ставит свежий релиз, и образ перестаёт быть воспроизводимым.
+RUN set -eux; \
+    npm install -g \
+      "mcp-instagram-dm@${INSTAGRAM_DM_VERSION}" \
+      "zenmoney-mcp@${ZENMONEY_NPM_VERSION}"; \
+    npm cache clean --force; \
+    command -v mcp-instagram-dm; \
+    command -v zenmoney-mcp
+
+# --- portainer-mcp --------------------------------------------------------
+COPY --from=portainer-fetcher /tmp/portainer-mcp /usr/local/lib/portainer-mcp/portainer-mcp
+
+# --- zenmoney-mcp-ddvin (форк) --------------------------------------------
+COPY --from=zenmoney-ddvin-builder --chown=1001:1001 /src /usr/local/lib/zenmoney-mcp-ddvin
+
+# --- one-zenwallet-mcp ----------------------------------------------------
+COPY --from=one-zenwallet-builder --chown=1001:1001 /out /usr/local/lib/one-zenwallet-mcp
+
+# --- lightpanda -----------------------------------------------------------
+COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpanda
+
+# --- обёртки и записываемые каталоги --------------------------------------
+#
+# WORKDIR (/app) принадлежит root, а MCP-серверы запускаются от nextjs.
+# portainer-mcp создаёт при старте tools.yaml в текущей директории,
+# zenmoney — файл кэша. Без записываемого каталога оба падают.
+#
+# ВНИМАНИЕ на имена: npm-пакет занимает /usr/local/bin/zenmoney-mcp, поэтому
+# форк называется zenmoney-mcp-ddvin — ровно как его собственный bin
+# в package.json. Иначе один затрёт другой.
+#
+# lightpanda в MCP-режиме по умолчанию не пишет на диск, но каталог ему всё
+# равно нужен: с --http-cache-dir/--cookie-jar он пишет в текущую директорию,
+# а /app от nextjs недоступен на запись.
+#
+# LIGHTPANDA_DISABLE_TELEMETRY выставляется в обёртке, а не в ENV образа:
+# без него сервер на каждом запуске сыплет в stderr «telemetry ... flush
+# err=CouldntConnect» (стенд закрыт от исходящих соединений), а MetaMCP
+# показывает stderr stdio-сервера как ошибки. Значение перекрывается из
+# конфигурации сервера, если телеметрию захочется вернуть.
+#
+RUN set -eux; \
+    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda; \
+    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'TOOLS="${PORTAINER_MCP_TOOLS:-/var/lib/portainer-mcp/tools.yaml}"' \
+      'cd /var/lib/portainer-mcp' \
+      'exec /usr/local/lib/portainer-mcp/portainer-mcp -tools "$TOOLS" "$@"' \
+      > /usr/local/bin/portainer-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'export ZENMONEY_CACHE_DIR="${ZENMONEY_CACHE_DIR:-/var/lib/zenmoney-mcp-ddvin}"' \
+      'cd /var/lib/zenmoney-mcp-ddvin' \
+      'exec node /usr/local/lib/zenmoney-mcp-ddvin/build/index.js "$@"' \
+      > /usr/local/bin/zenmoney-mcp-ddvin; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'exec uv --directory /opt/telegram-mcp run --frozen --no-dev main.py "$@"' \
+      > /usr/local/bin/telegram-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'export ONE_ZENWALLET_MCP_STATE_DIR="${ONE_ZENWALLET_MCP_STATE_DIR:-/var/lib/one-zenwallet-mcp}"' \
+      'cd /var/lib/one-zenwallet-mcp' \
+      'exec node /usr/local/lib/one-zenwallet-mcp/dist/server.js "$@"' \
+      > /usr/local/bin/one-zenwallet-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'export LIGHTPANDA_DISABLE_TELEMETRY="${LIGHTPANDA_DISABLE_TELEMETRY:-true}"' \
+      'cd /var/lib/lightpanda' \
+      'exec /usr/local/lib/lightpanda/lightpanda "$@"' \
+      > /usr/local/bin/lightpanda; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'exec /usr/local/bin/lightpanda mcp "$@"' \
+      > /usr/local/bin/lightpanda-mcp; \
+    \
+    chmod 0755 \
+      /usr/local/bin/portainer-mcp \
+      /usr/local/bin/zenmoney-mcp-ddvin \
+      /usr/local/bin/telegram-mcp \
+      /usr/local/bin/one-zenwallet-mcp \
+      /usr/local/bin/lightpanda \
+      /usr/local/bin/lightpanda-mcp
+
+# ===========================================================================
+# metamcp-admin-mcp — НЕ ВКЛЮЧЁН
+# ===========================================================================
+#
+# https://github.com/danielrosehill/metamcp-admin-mcp отдаёт 404 (проверено
+# 2026-07-27): репозиторий удалён, переименован или стал приватным. В npm его
+# не было и раньше. Вкомпилировать нечего.
+#
+# Нашли форк, зеркало или сохранился локальный клон — раскомментируйте стадию,
+# задайте ADMIN_MCP_REPO / ADMIN_MCP_COMMIT и добавьте COPY с обёрткой
+# (TypeScript, `npm install && npm run build`, запуск `node dist/index.js`).
+#
+# FROM node:20-bookworm-slim AS admin-builder
+# ARG ADMIN_MCP_REPO=https://github.com/<owner>/<fork>.git
+# ARG ADMIN_MCP_COMMIT=<sha>
+# RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git \
+#     && rm -rf /var/lib/apt/lists/*
+# WORKDIR /src
+# RUN set -eux; \
+#     git init -q .; git remote add origin "${ADMIN_MCP_REPO}"; \
+#     git fetch -q --depth 1 origin "${ADMIN_MCP_COMMIT}"; git checkout -q FETCH_HEAD; \
+#     if [ -f package-lock.json ]; then npm ci; else npm install; fi; \
+#     npm run build; test -f dist/index.js; npm prune --omit=dev; rm -rf .git
+
+USER nextjs
+
+EXPOSE 12008
+
+VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp"]
+
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:12008/health || exit 1
+
+CMD ["./docker-entrypoint.sh"]

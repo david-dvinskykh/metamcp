@@ -1,0 +1,278 @@
+name: Build and Push ARM64 image (all-in-one)
+
+# Собирает Dockerfile.all-in-one под linux/arm64 и публикует в GitHub Container
+# Registry (ghcr.io/<owner>/metamcp-all-in-one).
+#
+# Раннер — ubuntu-24.04-arm, то есть сборка идёт нативно на aarch64.
+# Через QEMU этот образ собирать нельзя: `pnpm build` (Next.js) под эмуляцией
+# уходит за лимит времени job'а.
+#
+# Когда собирается:
+#   • любой пуш в дефолтную ветку (мердж ветки в ai-dev) — ВСЕГДА, чтобы тег
+#     latest, на который смотрит watchtower, гарантированно поехал вперёд;
+#   • пуш в claude/** — только если тронуты Dockerfile.all-in-one или сам
+#     воркфлоу, иначе каждый коммит в рабочую ветку запускал бы часовую сборку;
+#   • ручной запуск — всегда.
+#
+# Условие живёт в job'е changes, а не в фильтре paths триггера: paths один на
+# все ветки, и с ним мердж в ai-dev, не трогающий эти два файла, не собирал бы
+# ничего — latest молча оставался бы на предыдущем образе.
+
+on:
+  workflow_dispatch:
+    inputs:
+      metamcp_base:
+        description: "Откуда брать MetaMCP: собрать из исходников или взять готовый образ"
+        type: choice
+        options:
+          - source
+          - prebuilt
+        default: source
+      extra_tag:
+        description: "Дополнительный тег образа (необязательно, например 1.2.3)"
+        type: string
+        default: ""
+  push:
+    branches:
+      - ai-dev
+      - "claude/**"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}-all-in-one
+
+concurrency:
+  group: docker-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Дешёвый (десятки секунд) страж перед часовой arm64-сборкой.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Нужна история: сравниваем состояние до и после пуша.
+          fetch-depth: 0
+
+      - name: Decide whether to build
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          decide() {
+            echo "$2"
+            echo "should_build=$1" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          [ "$EVENT" = "push" ] || decide true "событие $EVENT — собираем"
+
+          [ "$REF_NAME" != "$DEFAULT_BRANCH" ] \
+            || decide true "пуш в дефолтную ветку ($DEFAULT_BRANCH) — собираем всегда, иначе latest отстанет"
+
+          # Первый пуш ветки и force-push: BEFORE указывает в никуда
+          # (нули или уже недостижимый коммит) — сравнивать не с чем.
+          git cat-file -e "${BEFORE}^{commit}" 2>/dev/null \
+            || decide true "нет предыдущего коммита ($BEFORE) — собираем"
+
+          changed=$(git diff --name-only "$BEFORE" "$AFTER" -- \
+            Dockerfile.all-in-one .github/workflows/docker-arm64.yml)
+
+          [ -z "$changed" ] \
+            || decide true "изменилось: $changed"
+
+          decide false "ни Dockerfile.all-in-one, ни воркфлоу не тронуты — пропускаем сборку"
+
+  build-and-push-arm64:
+    needs: changes
+    if: needs.changes.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    steps:
+      # Образ большой (node_modules билдера + рантайма), а на раннере
+      # свободного места немного. Чистим заранее, чтобы сборка не упала
+      # на "no space left on device".
+      - name: Free disk space
+        run: |
+          set -x
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/share/swift \
+                      "$AGENT_TOOLSDIRECTORY" || true
+          docker system prune -af || true
+          df -h /
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=sha,format=short
+            type=raw,value=${{ inputs.extra_tag }},enable=${{ inputs.extra_tag != '' }}
+          labels: |
+            org.opencontainers.image.title=MetaMCP custom (all-in-one, arm64)
+            org.opencontainers.image.description=MetaMCP с предустановленными telegram, instagram, zenmoney, portainer и lightpanda MCP
+
+      - name: Build and push arm64 image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.all-in-one
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            METAMCP_BASE=${{ inputs.metamcp_base || 'source' }}
+          cache-from: type=gha,scope=all-in-one-arm64
+          # ignore-error: кэш GitHub Actions ограничен 10 ГБ, слепок сборки
+          # в него может не влезть — это не повод валить сборку.
+          cache-to: type=gha,mode=max,scope=all-in-one-arm64,ignore-error=true
+
+      # Проверяем именно опубликованный образ: что он действительно aarch64,
+      # что все обёртки на месте и что нативные части (Go-бинарник portainer-mcp,
+      # venv telegram-mcp) запускаются.
+      - name: Smoke test published image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          METAMCP_BASE: ${{ inputs.metamcp_base || 'source' }}
+        run: |
+          set -euxo pipefail
+          # Освобождаем место под docker pull: слепок сборки уже уехал в gha-кэш.
+          docker buildx prune -af || true
+          df -h /
+          docker pull "$IMAGE"
+
+          test "$(docker image inspect --format '{{.Architecture}}' "$IMAGE")" = "arm64"
+
+          docker run --rm --entrypoint /bin/sh "$IMAGE" -euxc '
+            test "$(uname -m)" = "aarch64"
+            command -v telegram-mcp
+            command -v mcp-instagram-dm
+            command -v zenmoney-mcp
+            command -v zenmoney-mcp-ddvin
+            command -v one-zenwallet-mcp
+            command -v better-telegram-mcp
+            command -v portainer-mcp
+            command -v lightpanda
+            command -v lightpanda-mcp
+            # версия должна совпадать с LIGHTPANDA_VERSION: nightly-тег
+            # переписывается, и подмена релиза иначе прошла бы незаметно
+            test "$(lightpanda version)" = "0.3.7"
+            # ровно та регрессия, из-за которой сервер и переехал в образ:
+            # mcp 2.0 убрал mcp.server.fastmcp, а пакет верхнюю границу не ставит
+            # ничто в кэше uv не должно принадлежать root: иначе uv run от
+            # nextjs падает с "failed to symlink ... Permission denied"
+            test -z "$(find /home/nextjs/.cache/uv ! -user nextjs -print -quit)"
+            # запрет на скачивание Python — только на время сборки; в рантайме
+            # uvx-серверу может понадобиться своя версия интерпретатора
+            test "${UV_PYTHON_DOWNLOADS:-unset}" != "never"
+            test -w "$HOME"
+            py=$(ls -d /opt/uv-tools/*/bin/python | head -1)
+            "$py" -c "import better_telegram_mcp, mcp.server.fastmcp"
+            "$py" -c "import importlib.metadata as m; v=m.version(\"mcp\"); assert int(v.split(\".\")[0]) < 2, v; print(\"mcp\", v)"
+            /usr/local/lib/portainer-mcp/portainer-mcp -h 2>&1 | grep -q -- "-disable-version-check"
+            /opt/telegram-mcp/.venv/bin/python -c "import telethon, mcp; print(telethon.__version__)"
+            node /usr/local/lib/zenmoney-mcp-ddvin/build/index.js --help >/dev/null 2>&1 || true
+            test -f /usr/local/lib/zenmoney-mcp-ddvin/build/index.js
+            test -f /app/docker-entrypoint.sh
+            test -d /app/apps/frontend/.next
+            test -d /app/apps/backend/dist
+            test -d /app/apps/frontend/node_modules
+            # docker-entrypoint.sh гоняет миграции ровно так же
+            cd /app/apps/backend && pnpm exec drizzle-kit --version
+          '
+
+          # one-zenwallet-mcp — ESM-бандл с внешними @modelcontextprotocol/sdk
+          # и zod. Проверка `command -v` тут ничего не значит: сервер падает уже
+          # на импортах, если рядом нет package.json с "type": "module" или не
+          # доедут зависимости. Поэтому гоняем настоящий MCP-handshake.
+          docker run --rm -i --entrypoint one-zenwallet-mcp "$IMAGE" > /tmp/ozw.out <<'JSONRPC' || true
+          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}
+          JSONRPC
+          head -c 300 /tmp/ozw.out
+          grep -q '"serverInfo"' /tmp/ozw.out
+          grep -q '"result"' /tmp/ozw.out
+
+          # lightpanda-mcp — тот же случай: `command -v` не проверяет ни
+          # динамические зависимости бинарника (нужен GLIBC_2.34), ни то, что
+          # серверу хватает прав в /var/lib/lightpanda. Гоняем handshake и
+          # заодно проверяем, что stderr чист: обёртка гасит телеметрию, а её
+          # предупреждения MetaMCP показывает как ошибки сервера.
+          docker run --rm -i --entrypoint lightpanda-mcp "$IMAGE" > /tmp/lp.out 2> /tmp/lp.err <<'JSONRPC' || true
+          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}
+          {"jsonrpc":"2.0","method":"notifications/initialized"}
+          {"jsonrpc":"2.0","id":2,"method":"tools/list"}
+          JSONRPC
+          head -c 300 /tmp/lp.out
+          cat /tmp/lp.err
+          grep -q '"name":"lightpanda"' /tmp/lp.out
+          grep -q '"name":"markdown"' /tmp/lp.out
+          ! grep -q 'scope=telemetry' /tmp/lp.err
+
+          # Патч таймаута прокси Next.js живёт в node_modules, который pnpm
+          # в рантайм-стадии может пересобрать. Проверяем, что 600000 доехало
+          # до образа, иначе регрессия проходит незаметно.
+          if [ "$METAMCP_BASE" = "source" ]; then
+            docker run --rm --entrypoint /bin/sh "$IMAGE" -euxc '
+              for f in /app/node_modules/.pnpm/next@*/node_modules/next/dist/server/lib/router-utils/proxy-request.js \
+                       /app/node_modules/.pnpm/next@*/node_modules/next/dist/esm/server/lib/router-utils/proxy-request.js; do
+                grep -q 600000 "$f"
+              done
+            '
+          fi
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        run: |
+          {
+            echo "### Опубликованный образ (linux/arm64)"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "digest: \`${{ steps.build.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
