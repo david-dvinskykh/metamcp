@@ -403,7 +403,9 @@ server-side, and forwards it:
 ```
 
 The relay understands the usual ways servers return a file: `image` / `audio` content,
-`resource` blobs, `resource_link`s, data URLs, and JSON replies carrying a download URL. If
+`resource` blobs, `resource_link`s, data URLs, JSON replies carrying a download URL, and a
+path mentioned in prose (`Media downloaded to /tmp/downloads/x.pdf.`) — the last one only for
+directories listed in `FILE_RELAY_LOCAL_PATH_ROOTS`. If
 auto-detection fails, point at the URL explicitly with `source.tool.urlPath`
 (e.g. `"result.file_url"`). `{{file.name}}`, `{{file.mimeType}}`, `{{file.size}}`,
 `{{file.sha256}}` and `{{env.ALLOWED_NAME}}` can be templated anywhere in the destination
@@ -423,7 +425,7 @@ and audit logging apply exactly as they would to a direct call.
 | `FILE_RELAY_ALLOWED_HOSTS` | *(empty = any public host)* | Comma-separated allow-list for `url` sources. |
 | `FILE_RELAY_ALLOW_PRIVATE_HOSTS` | `false` | Allow `url` sources to resolve to private/loopback addresses. |
 | `FILE_RELAY_SECRET_ENV` | *(empty)* | Env var names that may be used as `{{env.NAME}}`. |
-| `FILE_RELAY_LOCAL_PATH_ROOTS` | *(empty = disabled)* | Directories a source result may point into with a local path (useful for STDIO servers that save to disk). |
+| `FILE_RELAY_LOCAL_PATH_ROOTS` | *(empty = disabled)* | Directories a source result may point into with a local path. Needed for STDIO servers that save media to disk and answer with the path — e.g. `/tmp/downloads` for a Telethon-based Telegram server. |
 | `FILE_RELAY_MAX_RESULT_TEXT_CHARS` | `2000` | Truncation budget for text echoed back from a destination tool. |
 | `TELEGRAM_BOT_TOKEN` | – | Enables `source.telegram`. |
 | `TELEGRAM_API_BASE` | `https://api.telegram.org` | Point at a self-hosted Bot API server. |

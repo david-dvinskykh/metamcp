@@ -304,12 +304,25 @@ export async function stageFromToolResult(
       }
     }
 
-    if (path.isAbsolute(text) && !text.includes("\n")) {
-      return stageFromLocalPath(text, {
-        fileName: spec.fileName,
-        mimeType: spec.mimeType,
-        source: sourceLabel,
-      });
+    // Servers that write to disk usually answer in prose - "Media downloaded
+    // to /tmp/downloads/x.pdf." - so mine the sentence for a path rather than
+    // giving up. Every candidate still has to clear the root allow-list.
+    const candidates = findPathCandidates(text);
+    for (const [index, candidate] of candidates.entries()) {
+      try {
+        return await stageFromLocalPath(candidate, {
+          fileName: spec.fileName,
+          mimeType: spec.mimeType,
+          source: sourceLabel,
+        });
+      } catch (error) {
+        // One sentence can name several paths; keep trying. The last failure
+        // is worth surfacing though - "outside FILE_RELAY_LOCAL_PATH_ROOTS"
+        // tells the operator what to fix, "no file found" does not.
+        if (index === candidates.length - 1) {
+          throw error;
+        }
+      }
     }
   }
 
@@ -403,6 +416,24 @@ async function stageFromLocalPath(
 function firstText(result: CallToolResult): string | undefined {
   const item = (result.content ?? []).find((entry) => entry.type === "text");
   return typeof item?.text === "string" ? item.text.slice(0, 500) : undefined;
+}
+
+/**
+ * Absolute paths mentioned anywhere in a line of text, most specific first.
+ * Trailing sentence punctuation is trimmed, but never the extension itself.
+ */
+export function findPathCandidates(text: string): string[] {
+  if (text.includes("\n")) {
+    // Multi-line output is a log, not an answer; too easy to grab the wrong
+    // path out of it.
+    return [];
+  }
+
+  const matches = text.match(/\/[^\s"'<>|]+/g) ?? [];
+
+  return matches
+    .map((candidate) => candidate.replace(/[.,;:!?)\]}]+$/, ""))
+    .filter((candidate) => candidate.length > 1 && path.isAbsolute(candidate));
 }
 
 function isHttpUrl(value: string): boolean {
