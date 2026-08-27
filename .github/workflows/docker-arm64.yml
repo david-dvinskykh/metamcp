@@ -158,8 +158,16 @@ jobs:
           provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # METAMCP_REPO/COMMIT: собираем ровно тот коммит, который приехал в
+          # этот пуш, а не значение ARG по умолчанию. Иначе после каждого
+          # мерджа в ai-dev пин в Dockerfile пришлось бы двигать руками, а до
+          # тех пор latest молча собирался бы из старого кода.
+          # Внутри блока build-args комментарии писать нельзя: там каждая
+          # строка уходит в docker build как KEY=VALUE.
           build-args: |
             METAMCP_BASE=${{ inputs.metamcp_base || 'source' }}
+            METAMCP_REPO=${{ github.server_url }}/${{ github.repository }}.git
+            METAMCP_COMMIT=${{ github.sha }}
           cache-from: type=gha,scope=all-in-one-arm64
           # ignore-error: кэш GitHub Actions ограничен 10 ГБ, слепок сборки
           # в него может не влезть — это не повод валить сборку.

@@ -1,7 +1,9 @@
 # MetaMCP + все MCP-серверы в одном Dockerfile
 #
-#   metamcp            — metatool-ai/metamcp @ ai-dev (сборка из исходников)
-#                        либо готовый образ — переключается через METAMCP_BASE
+#   metamcp            — david-dvinskykh/metamcp @ ai-dev (сборка из исходников)
+#                        либо готовый образ — переключается через METAMCP_BASE;
+#                        готовый образ апстримный, то есть БЕЗ форковых правок
+#                        (file relay и прочее живут только в сборке из исходников)
 #   telegram-mcp       — chigwell/telegram-mcp (Python, uv sync по uv.lock)
 #   better-telegram-mcp— PyPI-пакет, ставится uv tool install, версия зафиксирована
 #   mcp-instagram-dm   — npm-пакет, версия зафиксирована
@@ -28,10 +30,14 @@
 # source | prebuilt
 ARG METAMCP_BASE=source
 
+# Апстримный образ: аварийный вариант, форковых правок в нём нет.
 ARG METAMCP_PREBUILT_IMAGE=ghcr.io/metatool-ai/metamcp:latest
-ARG METAMCP_REPO=https://github.com/metatool-ai/metamcp.git
-# ai-dev @ 2026-06-23 «Update README.md». Ветка движется — коммит зафиксирован.
-ARG METAMCP_COMMIT=ff4ff2de9d25453c52dcc7be32680b30700a6012
+# Форк, а не апстрим: здесь живут наши изменения (file relay Telegram → Drive).
+ARG METAMCP_REPO=https://github.com/david-dvinskykh/metamcp.git
+# ai-dev @ 2026-08-27 «Merge better-telegram-mcp inline-button patch». Ветка
+# движется — коммит зафиксирован. Значение по умолчанию нужно только для ручной
+# сборки: воркфлоу подставляет коммит пуша, поэтому CI не устаревает.
+ARG METAMCP_COMMIT=702fdb3ea950e9aa82296b5d9055e18e46f2758a
 # Соответствует полю packageManager в package.json ветки ai-dev.
 # Апстримный Dockerfile ставит 10.12.0 и расходится с манифестом.
 ARG PNPM_VERSION=10.29.3
@@ -392,7 +398,7 @@ ARG ZENMONEY_NPM_VERSION
 USER root
 WORKDIR /app
 
-LABEL org.opencontainers.image.source="https://github.com/metatool-ai/metamcp"
+LABEL org.opencontainers.image.source="https://github.com/david-dvinskykh/metamcp"
 LABEL org.opencontainers.image.description="MetaMCP с предустановленными telegram, instagram, zenmoney, one-zenwallet, portainer и lightpanda MCP"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="MetaMCP custom"
