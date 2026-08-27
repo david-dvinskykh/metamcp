@@ -299,6 +299,92 @@ describe("transfer_file from Telegram to Google Drive", () => {
     expect(await stagedFileCount()).toBe(0);
   });
 
+  it("looks the link up when Drive's upload reply omits it", async () => {
+    process.env.GOOGLE_DRIVE_CLIENT_ID = "client-id";
+    process.env.GOOGLE_DRIVE_CLIENT_SECRET = "client-secret";
+    process.env.GOOGLE_DRIVE_REFRESH_TOKEN = "refresh-token";
+
+    const seen: string[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        const url = input.toString();
+        seen.push(url);
+
+        if (url === "https://oauth2.googleapis.com/token") {
+          return Response.json({ access_token: "token-1", expires_in: 3600 });
+        }
+
+        if (url.startsWith("https://www.googleapis.com/upload/")) {
+          return new Response(null, {
+            status: 200,
+            headers: { location: "https://upload.example/session?upload_id=2" },
+          });
+        }
+
+        if (url.startsWith("https://upload.example/session")) {
+          // Drive's default response shape: no link, no size.
+          return Response.json({
+            kind: "drive#file",
+            id: "2XyZ",
+            name: "notes.txt",
+            mimeType: "text/plain",
+          });
+        }
+
+        return Response.json({
+          id: "2XyZ",
+          name: "notes.txt",
+          mimeType: "text/plain",
+          size: "11",
+          webViewLink: "https://drive.google.com/file/d/2XyZ/view",
+        });
+      }),
+    );
+
+    const callTool = vi.fn(
+      async () =>
+        ({
+          content: [
+            {
+              type: "resource",
+              resource: {
+                uri: "file:///tmp/notes.txt",
+                mimeType: "text/plain",
+                blob: Buffer.from("hello relay").toString("base64"),
+              },
+            },
+          ],
+        }) as CallToolResult,
+    );
+
+    const result = await executeFileRelayTool(
+      "metamcp-files__transfer_file",
+      {
+        source: { tool: { name: "Source__get_file" } },
+        destination: { googleDrive: {} },
+      },
+      callTool,
+    );
+
+    expect(result.isError).toBeFalsy();
+
+    const report = parseResult(result) as {
+      destination: { googleDrive: { id: string; webViewLink: string } };
+    };
+    expect(report.destination.googleDrive.webViewLink).toBe(
+      "https://drive.google.com/file/d/2XyZ/view",
+    );
+
+    // The metadata lookup only happens because the upload reply had no link.
+    expect(
+      seen.filter((url) =>
+        url.startsWith("https://www.googleapis.com/drive/v3/files/"),
+      ),
+    ).toHaveLength(1);
+  });
+
   it("explains itself when Telegram is not configured", async () => {
     const result = await executeFileRelayTool(
       "metamcp-files__transfer_file",

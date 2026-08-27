@@ -13,10 +13,14 @@ import { GoogleDriveDestinationInput } from "./schemas";
 import { StagedFile, stagingStore } from "./staging-store";
 
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
-const UPLOAD_ENDPOINT =
-  "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true";
 const RETURNED_FIELDS =
   "id,name,mimeType,size,webViewLink,webContentLink,parents";
+// `fields` belongs on the session-initiation request: Drive ignores it on the
+// PUT that uploads the bytes and answers with its default id/name/mimeType.
+const UPLOAD_ENDPOINT =
+  "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true" +
+  `&fields=${encodeURIComponent(RETURNED_FIELDS)}`;
+const FILES_ENDPOINT = "https://www.googleapis.com/drive/v3/files";
 
 /** MIME types Drive converts into native Google formats on request. */
 const GOOGLE_CONVERSIONS: Record<string, string> = {
@@ -227,7 +231,7 @@ export async function uploadStagedFileToDrive(
   // are never serialised into an MCP result.
   const payload = await stagingStore.read(file.handle);
 
-  const upload = await fetch(`${uploadUrl}&fields=${RETURNED_FIELDS}`, {
+  const upload = await fetch(uploadUrl, {
     method: "PUT",
     headers: {
       authorization: `Bearer ${accessToken}`,
@@ -253,11 +257,39 @@ export async function uploadStagedFileToDrive(
     );
   }
 
+  // A link is the one part of the answer a person actually uses, so don't
+  // leave it to chance: if the upload reply came back without one, ask for the
+  // metadata explicitly rather than handing back a bare file id.
+  const withLink = uploaded.webViewLink
+    ? uploaded
+    : { ...uploaded, ...(await fetchDriveMetadata(uploaded.id, accessToken)) };
+
   logger.info(
-    `File relay uploaded ${file.size} bytes to Google Drive as ${uploaded.id} (${uploaded.name})`,
+    `File relay uploaded ${file.size} bytes to Google Drive as ${withLink.id} (${withLink.name})`,
   );
 
-  return uploaded;
+  return withLink;
+}
+
+/** Best-effort metadata lookup; a failure here must not fail a done upload. */
+async function fetchDriveMetadata(
+  fileId: string,
+  accessToken: string,
+): Promise<Partial<DriveUploadResult>> {
+  try {
+    const response = await fetch(
+      `${FILES_ENDPOINT}/${fileId}?supportsAllDrives=true&fields=${encodeURIComponent(RETURNED_FIELDS)}`,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+    );
+
+    if (!response.ok) {
+      return {};
+    }
+
+    return ((await response.json()) as Partial<DriveUploadResult>) ?? {};
+  } catch {
+    return {};
+  }
 }
 
 async function describeError(response: Response): Promise<string> {
