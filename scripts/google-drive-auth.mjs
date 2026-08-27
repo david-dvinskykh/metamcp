@@ -17,66 +17,19 @@
  * Client id/secret are read from the flags, then the environment, then ./.env.
  */
 
-import { readFileSync } from "node:fs";
 import http from "node:http";
-import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+
+import {
+  parseArgs,
+  readDotEnv,
+  SCOPE_ALIASES,
+  TOKEN_ENDPOINT,
+} from "./lib/google-oauth.mjs";
 
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
-const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const DEFAULT_PORT = 53682;
 const TIMEOUT_MS = 5 * 60 * 1000;
-
-const SCOPE_ALIASES = {
-  "drive.file": "https://www.googleapis.com/auth/drive.file",
-  drive: "https://www.googleapis.com/auth/drive",
-};
-
-function parseArgs(argv) {
-  const args = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index];
-    if (!token.startsWith("--")) {
-      continue;
-    }
-    const key = token.slice(2);
-    const next = argv[index + 1];
-    if (next === undefined || next.startsWith("--")) {
-      args[key] = "true";
-    } else {
-      args[key] = next;
-      index += 1;
-    }
-  }
-  return args;
-}
-
-/** Minimal .env reader - the repo already keeps credentials there. */
-function readDotEnv() {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const envPath = path.join(here, "..", ".env");
-
-  let raw;
-  try {
-    raw = readFileSync(envPath, "utf8");
-  } catch {
-    return {};
-  }
-
-  const values = {};
-  for (const line of raw.split("\n")) {
-    const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)$/);
-    if (!match) {
-      continue;
-    }
-    values[match[1]] = match[2]
-      .trim()
-      .replace(/\s+#.*$/, "")
-      .replace(/^["']|["']$/g, "");
-  }
-  return values;
-}
 
 function fail(message) {
   console.error(`\n✖ ${message}\n`);

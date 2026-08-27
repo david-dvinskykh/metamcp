@@ -482,10 +482,23 @@ right least-privilege choice when you let it upload into *My Drive* root or into
 created. Targeting a pre-existing folder by ID needs the broader
 `https://www.googleapis.com/auth/drive`.
 
-**Check it worked.** Restart, reconnect your MCP client, and call
-`metamcp-files__transfer_file` — the tool's description ends with "Google Drive is configured
-on this server" once the credentials are picked up. A missing or wrong credential comes back
-as a plain error message from the tool rather than a silent failure.
+**Check it worked.** Before involving MCP at all, run the credential check — it fetches a
+token, uploads a tiny file through the same resumable path the relay uses, and deletes it
+again:
+
+```bash
+node scripts/google-drive-check.mjs                      # into My Drive
+node scripts/google-drive-check.mjs --folder-id 1AbC...  # into a specific folder
+```
+
+It names the failure when something is off: a revoked refresh token, a folder the scope
+cannot see, or a service account with no storage quota.
+
+Then restart MetaMCP and reconnect your MCP client: the description of
+`metamcp-files__transfer_file` ends with "Google Drive is configured on this server" once the
+credentials are picked up. Note that partial OAuth settings count as *not configured* — all
+three of `GOOGLE_DRIVE_CLIENT_ID`, `GOOGLE_DRIVE_CLIENT_SECRET` and
+`GOOGLE_DRIVE_REFRESH_TOKEN` must be present.
 
 ### 🔒 Notes on safety
 
