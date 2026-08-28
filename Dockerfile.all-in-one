@@ -10,6 +10,8 @@
 #   zenmoney-mcp       — npm-пакет zenmoney-mcp, версия зафиксирована
 #   zenmoney-mcp-ddvin — форк david-dvinskykh, сборка по package-lock.json
 #   one-zenwallet-mcp  — david-dvinskykh/one-zenwallet, каталог mcp-server
+#   gocardless-mcp     — david-dvinskykh/GoCardless-Bank-Accaunt-Data-MCP,
+#                        сборка по package-lock.json
 #   portainer-mcp      — strnad/portainer-mcp v0.6.1, Go-бинарник из релизов
 #   lightpanda-mcp     — lightpanda-io/browser 0.3.7, встроенный MCP-режим
 #   metamcp-admin      — НЕ ВКЛЮЧЁН: репозиторий удалён с GitHub, см. блок ниже
@@ -66,6 +68,12 @@ ARG ZENMONEY_DDVIN_COMMIT=25c409a97b9fbe09738f85ce93843e060b3d8800
 # david-dvinskykh/one-zenwallet @ main на 2026-07-31 («Support running the MCP
 # server via npx»). Репозиторий активно движется, тегов нет — пин по коммиту.
 ARG ONE_ZENWALLET_COMMIT=3c555f57bf4c98dc7279611ffc82453cdb93f0d2
+
+# david-dvinskykh/GoCardless-Bank-Accaunt-Data-MCP @ 0.1.0 — MCP-сервер к
+# GoCardless Bank Account Data API (v2, бывший Nordigen): подключение банка и
+# чтение балансов, реквизитов и истории операций. Тегов и пакета в npm нет,
+# ветка движется — пин по коммиту.
+ARG GOCARDLESS_MCP_COMMIT=985363bdfb13378bd189751313851a42b134f89c
 
 ARG PORTAINER_MCP_VERSION=0.6.1
 
@@ -381,6 +389,40 @@ RUN set -eux; \
     test -d /out/node_modules/@modelcontextprotocol/sdk
 
 # ===========================================================================
+# gocardless-builder — MCP-сервер к GoCardless Bank Account Data API
+# ===========================================================================
+#
+# В npm пакета нет, поэтому собираем из git. Сборка строго по
+# package-lock.json: `npm install` подтянул бы свежие @modelcontextprotocol/sdk
+# и zod, а на них завязан вывод типов при tsc — ровно та же грабля, что у
+# zenmoney-ddvin.
+#
+# `npm ci` сам гоняет хук prepare (tsc), но build вызываем явно: хук могут
+# убрать из package.json, и тогда сборка молча оставит пустой build/.
+#
+FROM node:20-bookworm-slim AS gocardless-builder
+
+ARG GOCARDLESS_MCP_COMMIT
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates git; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin https://github.com/david-dvinskykh/GoCardless-Bank-Accaunt-Data-MCP.git; \
+    git fetch -q --depth 1 origin "${GOCARDLESS_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    test -f package-lock.json || { echo "нет package-lock.json — сборка недетерминирована" >&2; exit 1; }; \
+    npm ci; \
+    npm run build; \
+    test -f build/index.js; \
+    npm prune --omit=dev; \
+    rm -rf .git src test .github
+
+# ===========================================================================
 # runner — итоговый образ поверх выбранного варианта MetaMCP
 # ===========================================================================
 #
@@ -399,7 +441,7 @@ USER root
 WORKDIR /app
 
 LABEL org.opencontainers.image.source="https://github.com/david-dvinskykh/metamcp"
-LABEL org.opencontainers.image.description="MetaMCP с предустановленными telegram, instagram, zenmoney, one-zenwallet, portainer и lightpanda MCP"
+LABEL org.opencontainers.image.description="MetaMCP с предустановленными telegram, instagram, zenmoney, one-zenwallet, gocardless, portainer и lightpanda MCP"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="MetaMCP custom"
 
@@ -482,6 +524,14 @@ COPY --from=zenmoney-ddvin-builder --chown=1001:1001 /src /usr/local/lib/zenmone
 # --- one-zenwallet-mcp ----------------------------------------------------
 COPY --from=one-zenwallet-builder --chown=1001:1001 /out /usr/local/lib/one-zenwallet-mcp
 
+# --- gocardless-mcp -------------------------------------------------------
+#
+# В конфигурации сервера в MetaMCP: команда `gocardless-mcp`, без аргументов,
+# и пара секретов Bank Account Data в окружении — GOCARDLESS_SECRET_ID и
+# GOCARDLESS_SECRET_KEY (создаются в кабинете bankaccountdata.gocardless.com,
+# раздел Developers → User secrets). Всё остальное у сервера с умолчаниями.
+COPY --from=gocardless-builder --chown=1001:1001 /src /usr/local/lib/gocardless-mcp
+
 # --- lightpanda -----------------------------------------------------------
 COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpanda
 
@@ -489,7 +539,9 @@ COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpa
 #
 # WORKDIR (/app) принадлежит root, а MCP-серверы запускаются от nextjs.
 # portainer-mcp создаёт при старте tools.yaml в текущей директории,
-# zenmoney — файл кэша. Без записываемого каталога оба падают.
+# zenmoney — файл кэша, gocardless-mcp — кэш токенов GoCardless (access живёт
+# сутки, refresh — 30 дней). Без записываемого каталога они падают либо жгут
+# по запросу токена на каждый рестарт контейнера.
 #
 # ВНИМАНИЕ на имена: npm-пакет занимает /usr/local/bin/zenmoney-mcp, поэтому
 # форк называется zenmoney-mcp-ddvin — ровно как его собственный bin
@@ -506,8 +558,8 @@ COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpa
 # конфигурации сервера, если телеметрию захочется вернуть.
 #
 RUN set -eux; \
-    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda; \
-    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda; \
+    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp; \
+    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp; \
     \
     printf '%s\n' \
       '#!/bin/sh' \
@@ -542,6 +594,14 @@ RUN set -eux; \
     printf '%s\n' \
       '#!/bin/sh' \
       'set -e' \
+      'export GOCARDLESS_CACHE_DIR="${GOCARDLESS_CACHE_DIR:-/var/lib/gocardless-mcp}"' \
+      'cd /var/lib/gocardless-mcp' \
+      'exec node /usr/local/lib/gocardless-mcp/build/index.js "$@"' \
+      > /usr/local/bin/gocardless-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
       'export LIGHTPANDA_DISABLE_TELEMETRY="${LIGHTPANDA_DISABLE_TELEMETRY:-true}"' \
       'cd /var/lib/lightpanda' \
       'exec /usr/local/lib/lightpanda/lightpanda "$@"' \
@@ -558,6 +618,7 @@ RUN set -eux; \
       /usr/local/bin/zenmoney-mcp-ddvin \
       /usr/local/bin/telegram-mcp \
       /usr/local/bin/one-zenwallet-mcp \
+      /usr/local/bin/gocardless-mcp \
       /usr/local/bin/lightpanda \
       /usr/local/bin/lightpanda-mcp
 
@@ -589,7 +650,7 @@ USER nextjs
 
 EXPOSE 12008
 
-VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp"]
+VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp", "/var/lib/gocardless-mcp"]
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:12008/health || exit 1

@@ -145,7 +145,7 @@ jobs:
             type=raw,value=${{ inputs.extra_tag }},enable=${{ inputs.extra_tag != '' }}
           labels: |
             org.opencontainers.image.title=MetaMCP custom (all-in-one, arm64)
-            org.opencontainers.image.description=MetaMCP с предустановленными telegram, instagram, zenmoney, portainer и lightpanda MCP
+            org.opencontainers.image.description=MetaMCP с предустановленными telegram, instagram, zenmoney, gocardless, portainer и lightpanda MCP
 
       - name: Build and push arm64 image
         id: build
@@ -196,6 +196,7 @@ jobs:
             command -v zenmoney-mcp
             command -v zenmoney-mcp-ddvin
             command -v one-zenwallet-mcp
+            command -v gocardless-mcp
             command -v better-telegram-mcp
             command -v portainer-mcp
             command -v lightpanda
@@ -219,6 +220,8 @@ jobs:
             /opt/telegram-mcp/.venv/bin/python -c "import telethon, mcp; print(telethon.__version__)"
             node /usr/local/lib/zenmoney-mcp-ddvin/build/index.js --help >/dev/null 2>&1 || true
             test -f /usr/local/lib/zenmoney-mcp-ddvin/build/index.js
+            test -f /usr/local/lib/gocardless-mcp/build/index.js
+            test -w /var/lib/gocardless-mcp
             test -f /app/docker-entrypoint.sh
             test -d /app/apps/frontend/.next
             test -d /app/apps/backend/dist
@@ -237,6 +240,22 @@ jobs:
           head -c 300 /tmp/ozw.out
           grep -q '"serverInfo"' /tmp/ozw.out
           grep -q '"result"' /tmp/ozw.out
+
+          # gocardless-mcp: сервер требует секреты GoCardless и без них
+          # завершается ещё до handshake. Настоящих секретов в CI нет, поэтому
+          # проверяем ровно то, что можно без сети, — что сервер поднимается на
+          # фиктивной паре, отдаёт serverInfo и объявляет свои инструменты.
+          docker run --rm -i \
+            -e GOCARDLESS_SECRET_ID=ci-smoke -e GOCARDLESS_SECRET_KEY=ci-smoke \
+            --entrypoint gocardless-mcp "$IMAGE" > /tmp/gc.out <<'JSONRPC' || true
+          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}
+          {"jsonrpc":"2.0","method":"notifications/initialized"}
+          {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+          JSONRPC
+          head -c 300 /tmp/gc.out
+          grep -q '"gocardless-bank-account-data"' /tmp/gc.out
+          grep -q '"connect_bank"' /tmp/gc.out
+          grep -q '"get_account_transactions"' /tmp/gc.out
 
           # lightpanda-mcp — тот же случай: `command -v` не проверяет ни
           # динамические зависимости бинарника (нужен GLIBC_2.34), ни то, что
