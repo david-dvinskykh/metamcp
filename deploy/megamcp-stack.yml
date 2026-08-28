@@ -1,0 +1,147 @@
+# Стек megamcp (Portainer stack 22): MetaMCP all-in-one + Postgres + watchtower.
+#
+# Версионированная копия того, что лежит в веб-редакторе Portainer. Стек
+# создан через редактор, а не из git, поэтому файл здесь — не источник правды
+# для Portainer, а то, что в него кладут: правки вносятся сюда, потом
+# содержимое уезжает в стек через PUT /api/stacks/22.
+#
+# Почему образ по тегу, а не по дайджесту: стек стоял на
+# `metamcp-all-in-one@sha256:...`, и это отключало любое автообновление —
+# `latest` в GHCR уезжал вперёд после каждого мерджа в ai-dev, а стек оставался
+# на своём дайджесте. Тег + watchtower возвращают автообновление; за
+# воспроизводимость отвечает не стек, а пины внутри Dockerfile.all-in-one.
+#
+# Пакет в GHCR публичный, поэтому watchtower ходит в реестр анонимно —
+# REPO_USER/REPO_PASS не нужны.
+
+services:
+  app:
+    container_name: metamcp
+    image: ghcr.io/david-dvinskykh/metamcp-all-in-one:latest
+    # Метки — то, по чему watchtower выбирает контейнер: он запущен с
+    # --label-enable --scope=megamcp и без обеих меток контейнер не тронет.
+    # Postgres их не имеет намеренно: молча подменять СУБД под данными нельзя.
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: megamcp
+    ports:
+      - "8034:12008"
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-metamcp_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-m3t4mcp}
+      POSTGRES_DB: ${POSTGRES_DB:-metamcp_db}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-metamcp_user}:${POSTGRES_PASSWORD:-m3t4mcp}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-metamcp_db}
+      APP_URL: ${APP_URL:-http://localhost:8034}
+      NEXT_PUBLIC_APP_URL: ${APP_URL:-http://localhost:8034}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-your-super-secret-key-change-this-in-production}
+      TRANSFORM_LOCALHOST_TO_DOCKER_INTERNAL: ${TRANSFORM_LOCALHOST_TO_DOCKER_INTERNAL:-true}
+      # Прямой перенос файлов (Telegram -> Google Drive) внутри MetaMCP.
+      # Переменные из stack.env сами в контейнер не попадают: compose берёт их
+      # только для подстановки ${...}, поэтому пробрасываем явно.
+      # Пустое значение = "не задано", бэкенд подставит свой дефолт.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_API_BASE: ${TELEGRAM_API_BASE:-}
+      GOOGLE_DRIVE_CLIENT_ID: ${GOOGLE_DRIVE_CLIENT_ID:-}
+      GOOGLE_DRIVE_CLIENT_SECRET: ${GOOGLE_DRIVE_CLIENT_SECRET:-}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${GOOGLE_DRIVE_REFRESH_TOKEN:-}
+      GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON: ${GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON:-}
+      GOOGLE_DRIVE_SUBJECT: ${GOOGLE_DRIVE_SUBJECT:-}
+      GOOGLE_DRIVE_SCOPE: ${GOOGLE_DRIVE_SCOPE:-}
+      GOOGLE_DRIVE_DEFAULT_FOLDER_ID: ${GOOGLE_DRIVE_DEFAULT_FOLDER_ID:-}
+      FILE_RELAY_ENABLED: ${FILE_RELAY_ENABLED:-}
+      FILE_RELAY_MAX_BYTES: ${FILE_RELAY_MAX_BYTES:-}
+      FILE_RELAY_STAGING_DIR: ${FILE_RELAY_STAGING_DIR:-}
+      FILE_RELAY_TTL_MS: ${FILE_RELAY_TTL_MS:-}
+      FILE_RELAY_ALLOWED_HOSTS: ${FILE_RELAY_ALLOWED_HOSTS:-}
+      FILE_RELAY_ALLOW_PRIVATE_HOSTS: ${FILE_RELAY_ALLOW_PRIVATE_HOSTS:-}
+      FILE_RELAY_SECRET_ENV: ${FILE_RELAY_SECRET_ENV:-}
+      FILE_RELAY_LOCAL_PATH_ROOTS: ${FILE_RELAY_LOCAL_PATH_ROOTS:-}
+      FILE_RELAY_MAX_RESULT_TEXT_CHARS: ${FILE_RELAY_MAX_RESULT_TEXT_CHARS:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - metamcp_telegram_data:/opt/telegram/data
+      # Кэши stdio-серверов из образа: portainer-mcp кладёт tools.yaml,
+      # zenmoney и gocardless — свои кэши (у gocardless это токены доступа,
+      # сутки/30 дней). Без томов каждое пересоздание контейнера их теряет.
+      - portainer_mcp_data:/var/lib/portainer-mcp
+      - zenmoney_ddvin_data:/var/lib/zenmoney-mcp-ddvin
+      - one_zenwallet_data:/var/lib/one-zenwallet-mcp
+      - gocardless_data:/var/lib/gocardless-mcp
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: always
+    networks:
+      - metamcp-network
+      - hassio
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: metamcp-pg
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-metamcp_db}
+      POSTGRES_USER: ${POSTGRES_USER:-metamcp_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-m3t4mcp}
+    ports:
+      - "${POSTGRES_EXTERNAL_PORT:-9433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-metamcp_user} -d ${POSTGRES_DB:-metamcp_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - metamcp-network
+
+  # Тот же расклад, что у стека family-medcard: свой watchtower на стек, а не
+  # один общий на хост. --scope=megamcp держит его в своих границах — чужие
+  # контейнеры он не трогает, а чужой watchtower не трогает эти.
+  watchtower:
+    # Версия зафиксирована намеренно: на :latest обновляющий сам себя
+    # watchtower способен сломаться и увезти с собой всё автообновление стека.
+    image: nickfedor/watchtower:1.21.2
+    container_name: megamcp-watchtower
+    restart: always
+    # Список, а не строка: в расписании есть пробелы, и при строчной форме
+    # compose разложил бы его на шесть отдельных аргументов.
+    # Cron у watchtower шестипольный, с секундами: раз в пять минут.
+    command:
+      - --scope=megamcp
+      - --label-enable
+      - --cleanup
+      - --stop-timeout=60s
+      - --schedule=0 */5 * * * *
+    labels:
+      com.centurylinklabs.watchtower: "true"
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: megamcp
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - metamcp-network
+
+volumes:
+  postgres_data:
+    driver: local
+  metamcp_telegram_data:
+    driver: local
+  portainer_mcp_data:
+    driver: local
+  zenmoney_ddvin_data:
+    driver: local
+  one_zenwallet_data:
+    driver: local
+  gocardless_data:
+    driver: local
+
+networks:
+  metamcp-network:
+    driver: bridge
+  hassio:
+    external: true
