@@ -109,6 +109,37 @@ export const GoogleDriveDestinationSchema = z.object({
     ),
 });
 
+export const CreateDriveUploadSessionInputSchema = z.object({
+  fileName: z
+    .string()
+    .describe("Name the file will get in Drive, e.g. 'report.pdf'."),
+  folderId: z
+    .string()
+    .optional()
+    .describe("Target folder ID. Defaults to GOOGLE_DRIVE_DEFAULT_FOLDER_ID."),
+  mimeType: z
+    .string()
+    .optional()
+    .describe(
+      "MIME type of the bytes that will be uploaded. Defaults to application/octet-stream.",
+    ),
+  sizeBytes: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Size of the upload, when known. Lets Drive reject a quota or permission problem before any byte moves.",
+    ),
+  description: z.string().optional(),
+  convertToGoogleDoc: z
+    .boolean()
+    .optional()
+    .describe(
+      "Convert on upload (docx to Google Docs, xlsx to Sheets, and so on).",
+    ),
+});
+
 export const DestinationSchema = z
   .object({
     googleDrive: GoogleDriveDestinationSchema.optional().describe(
@@ -150,3 +181,6 @@ export type GoogleDriveDestinationInput = z.infer<
   typeof GoogleDriveDestinationSchema
 >;
 export type DestinationInput = z.infer<typeof DestinationSchema>;
+export type CreateDriveUploadSessionInput = z.infer<
+  typeof CreateDriveUploadSessionInputSchema
+>;

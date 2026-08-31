@@ -21,6 +21,7 @@ const UPLOAD_ENDPOINT =
   "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true" +
   `&fields=${encodeURIComponent(RETURNED_FIELDS)}`;
 const FILES_ENDPOINT = "https://www.googleapis.com/drive/v3/files";
+const DEFAULT_UPLOAD_MIME_TYPE = "application/octet-stream";
 
 /** MIME types Drive converts into native Google formats on request. */
 const GOOGLE_CONVERSIONS: Record<string, string> = {
@@ -37,6 +38,23 @@ const GOOGLE_CONVERSIONS: Record<string, string> = {
   "text/plain": "application/vnd.google-apps.document",
   "text/markdown": "application/vnd.google-apps.document",
 };
+
+/** What a caller needs to PUT the bytes to Google themselves. */
+export interface DriveUploadSession {
+  uploadUri: string;
+  fileName: string;
+  mimeType: string;
+  folderId?: string;
+}
+
+export interface DriveUploadSessionInput {
+  fileName: string;
+  folderId?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  description?: string;
+  convertToGoogleDoc?: boolean;
+}
 
 export interface DriveUploadResult {
   id: string;
@@ -181,61 +199,28 @@ export async function uploadStagedFileToDrive(
   file: StagedFile,
   destination: GoogleDriveDestinationInput,
 ): Promise<DriveUploadResult> {
-  const accessToken = await getAccessToken();
-  const folderId = destination.folderId || getGoogleDriveDefaultFolderId();
   const sourceMimeType = destination.mimeType || file.mimeType;
 
-  const metadata: Record<string, unknown> = {
-    name: destination.fileName || file.fileName,
-    ...(folderId ? { parents: [folderId] } : {}),
-    ...(destination.description
-      ? { description: destination.description }
-      : {}),
-  };
-
-  if (destination.convertToGoogleDoc) {
-    const target = GOOGLE_CONVERSIONS[sourceMimeType];
-    if (!target) {
-      throw new FileRelayError(
-        `Google Drive cannot convert ${sourceMimeType} into a native Google format.`,
-      );
-    }
-    metadata.mimeType = target;
-  }
-
-  const session = await fetch(UPLOAD_ENDPOINT, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      "content-type": "application/json; charset=UTF-8",
-      "X-Upload-Content-Type": sourceMimeType,
-      "X-Upload-Content-Length": String(file.size),
-    },
-    body: JSON.stringify(metadata),
+  const session = await createDriveUploadSession({
+    fileName: destination.fileName || file.fileName,
+    folderId: destination.folderId,
+    mimeType: sourceMimeType,
+    sizeBytes: file.size,
+    description: destination.description,
+    convertToGoogleDoc: destination.convertToGoogleDoc,
   });
 
-  if (!session.ok) {
-    throw new FileRelayError(
-      `Google Drive rejected the upload session: ${await describeError(session)}`,
-    );
-  }
-
-  const uploadUrl = session.headers.get("location");
-  if (!uploadUrl) {
-    throw new FileRelayError(
-      "Google Drive did not return a resumable upload URL.",
-    );
-  }
+  const accessToken = await getAccessToken();
 
   // The bytes are read from disk only here, at the last possible moment, and
   // are never serialised into an MCP result.
   const payload = await stagingStore.read(file.handle);
 
-  const upload = await fetch(uploadUrl, {
+  const upload = await fetch(session.uploadUri, {
     method: "PUT",
     headers: {
       authorization: `Bearer ${accessToken}`,
-      "content-type": sourceMimeType,
+      "content-type": session.mimeType,
       "content-length": String(payload.length),
     },
     body: payload,
@@ -269,6 +254,95 @@ export async function uploadStagedFileToDrive(
   );
 
   return withLink;
+}
+
+/**
+ * Open a resumable upload session and hand back the session URI Google
+ * answers with.
+ *
+ * That URI is worth more than it looks: it is a single-use, file-scoped
+ * credential that expires in about a week and needs no `Authorization`
+ * header. So whoever actually holds the bytes - a sandbox, a CI job, the
+ * caller's own shell - can `curl -X PUT --data-binary @file <uri>` straight
+ * to Google. The file never touches MetaMCP, and no long-lived secret ever
+ * leaves this process.
+ */
+export async function createDriveUploadSession(
+  input: DriveUploadSessionInput,
+): Promise<DriveUploadSession> {
+  const accessToken = await getAccessToken();
+  const folderId = input.folderId || getGoogleDriveDefaultFolderId();
+  const mimeType = input.mimeType || DEFAULT_UPLOAD_MIME_TYPE;
+
+  const metadata = buildDriveMetadata({
+    fileName: input.fileName,
+    folderId,
+    mimeType,
+    description: input.description,
+    convertToGoogleDoc: input.convertToGoogleDoc,
+  });
+
+  const session = await fetch(UPLOAD_ENDPOINT, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json; charset=UTF-8",
+      "X-Upload-Content-Type": mimeType,
+      // Optional: when the size is known up front Drive checks quota and
+      // folder permissions before a single byte moves.
+      ...(input.sizeBytes !== undefined
+        ? { "X-Upload-Content-Length": String(input.sizeBytes) }
+        : {}),
+    },
+    body: JSON.stringify(metadata),
+  });
+
+  if (!session.ok) {
+    throw new FileRelayError(
+      `Google Drive rejected the upload session: ${await describeError(session)}`,
+    );
+  }
+
+  const uploadUri = session.headers.get("location");
+  if (!uploadUri) {
+    throw new FileRelayError(
+      "Google Drive did not return a resumable upload URL.",
+    );
+  }
+
+  logger.info(
+    `File relay opened a Google Drive upload session for ${input.fileName}${
+      folderId ? ` in folder ${folderId}` : ""
+    }`,
+  );
+
+  return { uploadUri, fileName: input.fileName, mimeType, folderId };
+}
+
+function buildDriveMetadata(params: {
+  fileName: string;
+  folderId?: string;
+  mimeType: string;
+  description?: string;
+  convertToGoogleDoc?: boolean;
+}): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {
+    name: params.fileName,
+    ...(params.folderId ? { parents: [params.folderId] } : {}),
+    ...(params.description ? { description: params.description } : {}),
+  };
+
+  if (params.convertToGoogleDoc) {
+    const target = GOOGLE_CONVERSIONS[params.mimeType];
+    if (!target) {
+      throw new FileRelayError(
+        `Google Drive cannot convert ${params.mimeType} into a native Google format.`,
+      );
+    }
+    metadata.mimeType = target;
+  }
+
+  return metadata;
 }
 
 /** Best-effort metadata lookup; a failure here must not fail a done upload. */

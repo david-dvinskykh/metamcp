@@ -8,8 +8,12 @@ import { createToolName } from "../metamcp/tool-name-parser";
 import { isFileRelayEnabled } from "./config";
 import { deliverStagedFile, DeliveryResult } from "./destinations";
 import { FileRelayError } from "./errors";
-import { isGoogleDriveConfigured } from "./google-drive";
 import {
+  createDriveUploadSession,
+  isGoogleDriveConfigured,
+} from "./google-drive";
+import {
+  CreateDriveUploadSessionInputSchema,
   DeliverFileInputSchema,
   DestinationInput,
   SourceInput,
@@ -26,6 +30,8 @@ interface FileRelayToolDefinition {
   description: string;
   inputValidator: ZodTypeAny;
   handler: (input: unknown, callTool: CallToolFn) => Promise<unknown>;
+  /** Omit the tool from tools/list when its backing service is unconfigured. */
+  isAvailable?: () => boolean;
 }
 
 const RELAY_TOOLS: FileRelayToolDefinition[] = [
@@ -95,6 +101,35 @@ const RELAY_TOOLS: FileRelayToolDefinition[] = [
       }
     },
   },
+  {
+    name: "create_drive_upload_session",
+    description:
+      "Open a Google Drive resumable upload session with the server's credentials and return only the session URI. " +
+      "Use this when the bytes are somewhere you can run a shell (a sandbox, a CI job) rather than somewhere MetaMCP can fetch them: upload them yourself with " +
+      "`curl -X PUT --data-binary @<file> '<uploadUri>'` and Google answers with the finished file's JSON, id and webViewLink included. " +
+      "The bytes go straight to Google - they never pass through this conversation or through MetaMCP. " +
+      "The session URI is a single-use, file-scoped credential (roughly a week's life) and needs no Authorization header, so no long-lived secret is exposed.",
+    inputValidator: CreateDriveUploadSessionInputSchema,
+    isAvailable: isGoogleDriveConfigured,
+    handler: async (input) => {
+      const parsed = CreateDriveUploadSessionInputSchema.parse(input);
+      const session = await createDriveUploadSession(parsed);
+
+      return {
+        ok: true,
+        uploadUri: session.uploadUri,
+        file: {
+          fileName: session.fileName,
+          mimeType: session.mimeType,
+          ...(session.folderId ? { folderId: session.folderId } : {}),
+        },
+        upload: `curl -X PUT --data-binary @<file> -H 'Content-Type: ${session.mimeType}' '${session.uploadUri}'`,
+        note:
+          "PUT the bytes to uploadUri to finish the upload; Google replies with the created file's JSON (id, name, webViewLink). " +
+          "The URI accepts one file, expires in about a week, and carries its own authorization - do not add an Authorization header.",
+      };
+    },
+  },
 ];
 
 const RELAY_TOOLS_BY_NAME = new Map(
@@ -156,16 +191,18 @@ export function getFileRelayToolsForMcp(): Tool[] {
     ? " Google Drive is configured on this server, so destination {googleDrive:{...}} works out of the box."
     : "";
 
-  return RELAY_TOOLS.map((tool) => ({
-    name: getExposedFileRelayToolName(tool.name),
-    description:
-      tool.name === "transfer_file"
-        ? `${tool.description}${driveHint}`
-        : tool.description,
-    inputSchema: zodToMcpInputSchema(
-      tool.inputValidator,
-    ) as Tool["inputSchema"],
-  }));
+  return RELAY_TOOLS.filter((tool) => tool.isAvailable?.() ?? true).map(
+    (tool) => ({
+      name: getExposedFileRelayToolName(tool.name),
+      description:
+        tool.name === "transfer_file"
+          ? `${tool.description}${driveHint}`
+          : tool.description,
+      inputSchema: zodToMcpInputSchema(
+        tool.inputValidator,
+      ) as Tool["inputSchema"],
+    }),
+  );
 }
 
 export async function executeFileRelayTool(

@@ -333,13 +333,15 @@ MetaMCP's built-in **file relay** does the copy inside the server instead. The b
 `source → MetaMCP disk → destination` and never enter the context window; the client only
 sees a small JSON summary (name, MIME type, size, sha256, destination link).
 
-The relay is enabled by default and appears in every namespace as three tools:
+The relay is enabled by default and appears in every namespace as three tools, plus a fourth
+once Google Drive is configured:
 
 | Tool | What it does |
 | --- | --- |
 | `metamcp-files__transfer_file` | Source → destination in one call. This is the one you normally want. |
 | `metamcp-files__stage_file` | Pull the file into MetaMCP's staging area, return only its metadata + a handle. |
 | `metamcp-files__deliver_file` | Send a previously staged handle to a destination. |
+| `metamcp-files__create_drive_upload_session` | Open a Drive upload session and hand back the URI, so the caller can PUT the bytes itself. |
 
 **Sources** (pick exactly one): `telegram` (a Bot API `file_id`), `tool` (any tool of the same
 namespace), `url` (any http(s) URL).
@@ -375,6 +377,43 @@ The reply is just:
   "note": "2317441 bytes were relayed server-side and never entered the conversation."
 }
 ```
+
+### ⬆️ Sandbox → Google Drive (the file MetaMCP cannot reach)
+
+The relay can only move a file it can fetch. When the bytes sit on a disk MetaMCP has no
+access to — an agent's sandbox, a CI runner, your own laptop — ask for an upload session
+instead and do the PUT yourself:
+
+```json
+{
+  "name": "metamcp-files__create_drive_upload_session",
+  "arguments": {
+    "folderId": "1AbC...",
+    "fileName": "report.pdf",
+    "mimeType": "application/pdf"
+  }
+}
+```
+
+```json
+{
+  "ok": true,
+  "uploadUri": "https://storage.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=…",
+  "file": { "fileName": "report.pdf", "mimeType": "application/pdf", "folderId": "1AbC..." },
+  "upload": "curl -X PUT --data-binary @<file> -H 'Content-Type: application/pdf' '…'"
+}
+```
+
+One `curl -X PUT --data-binary @report.pdf '<uploadUri>'` later, Google itself answers with
+the finished file's JSON — `id` and `webViewLink` included, because the `fields` were set when
+the session was opened.
+
+Why this is worth a tool of its own: the bytes go **straight from wherever they are to
+Google**, with no third party in between and no copy on MetaMCP's disk. The session URI is a
+single-use credential scoped to that one file, valid for about a week, and it needs no
+`Authorization` header — so the server's refresh token or service-account key never leaves
+the server, and nothing long-lived ends up in a conversation. The tool is only listed when
+Drive credentials are configured.
 
 ### 🔁 Any MCP tool → any MCP tool
 

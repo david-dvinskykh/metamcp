@@ -15,7 +15,10 @@ import {
 } from "vitest";
 
 import { resetGoogleDriveTokenCache } from "./google-drive";
-import { executeFileRelayTool } from "./tools-registry";
+import {
+  executeFileRelayTool,
+  getFileRelayToolsForMcp,
+} from "./tools-registry";
 
 const PDF_BYTES = Buffer.from("%PDF-1.7 pretend this is a 20 MB report");
 const BOT_TOKEN = "123456:TEST-TOKEN";
@@ -397,6 +400,106 @@ describe("transfer_file from Telegram to Google Drive", () => {
 
     expect(result.isError).toBe(true);
     expect(firstText(result)).toContain("TELEGRAM_BOT_TOKEN");
+  });
+});
+
+describe("create_drive_upload_session", () => {
+  it("returns a session URI the caller can PUT to itself", async () => {
+    process.env.GOOGLE_DRIVE_CLIENT_ID = "client-id";
+    process.env.GOOGLE_DRIVE_CLIENT_SECRET = "client-secret";
+    process.env.GOOGLE_DRIVE_REFRESH_TOKEN = "refresh-token";
+
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL, init?: RequestInit) => {
+        const url = input.toString();
+        requests.push({ url, init });
+
+        if (url === "https://oauth2.googleapis.com/token") {
+          return Response.json({ access_token: "token-1", expires_in: 3600 });
+        }
+
+        return new Response(null, {
+          status: 200,
+          headers: { location: "https://upload.example/session?upload_id=7" },
+        });
+      }),
+    );
+
+    const result = await executeFileRelayTool(
+      "metamcp-files__create_drive_upload_session",
+      {
+        folderId: "folder-9",
+        fileName: "scan.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 4096,
+      },
+      vi.fn(),
+    );
+
+    expect(result.isError).toBeFalsy();
+
+    const report = parseResult(result) as {
+      uploadUri: string;
+      file: { fileName: string; mimeType: string; folderId: string };
+      upload: string;
+    };
+    expect(report.uploadUri).toBe("https://upload.example/session?upload_id=7");
+    expect(report.file).toMatchObject({
+      fileName: "scan.pdf",
+      mimeType: "application/pdf",
+      folderId: "folder-9",
+    });
+    expect(report.upload).toContain("--data-binary");
+
+    // Drive was told about the file up front, and nothing was uploaded.
+    const sessionRequest = requests.find((request) =>
+      request.url.startsWith("https://www.googleapis.com/upload/"),
+    );
+    expect(JSON.parse(String(sessionRequest?.init?.body))).toMatchObject({
+      name: "scan.pdf",
+      parents: ["folder-9"],
+    });
+    expect(
+      (sessionRequest?.init?.headers as Record<string, string>)[
+        "X-Upload-Content-Length"
+      ],
+    ).toBe("4096");
+    expect(requests.some((request) => request.init?.method === "PUT")).toBe(
+      false,
+    );
+
+    // Nothing was staged: MetaMCP never sees the bytes at all.
+    expect(await stagedFileCount()).toBe(0);
+  });
+
+  it("stays out of tools/list until Drive is configured", () => {
+    const withoutDrive = getFileRelayToolsForMcp().map((tool) => tool.name);
+    expect(withoutDrive).not.toContain(
+      "metamcp-files__create_drive_upload_session",
+    );
+    expect(withoutDrive).toContain("metamcp-files__transfer_file");
+
+    process.env.GOOGLE_DRIVE_CLIENT_ID = "client-id";
+    process.env.GOOGLE_DRIVE_CLIENT_SECRET = "client-secret";
+    process.env.GOOGLE_DRIVE_REFRESH_TOKEN = "refresh-token";
+
+    expect(getFileRelayToolsForMcp().map((tool) => tool.name)).toContain(
+      "metamcp-files__create_drive_upload_session",
+    );
+  });
+
+  it("explains itself when Drive is not configured", async () => {
+    const result = await executeFileRelayTool(
+      "metamcp-files__create_drive_upload_session",
+      { fileName: "scan.pdf" },
+      vi.fn(),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(firstText(result)).toContain("GOOGLE_DRIVE_CLIENT_ID");
   });
 });
 
