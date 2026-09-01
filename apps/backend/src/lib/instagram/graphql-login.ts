@@ -35,6 +35,9 @@ const WEB_APP_ID = "936619743392459";
 const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_REDIRECTS = 3;
 
+/** Scheme version in the `#PWD_BROWSER:<version>:` prefix. */
+const PASSWORD_SCHEME_VERSION = 10;
+
 /** Persisted-query ids, from a recorded login. Refresh together when they age out. */
 export const PERSISTED_QUERIES = {
   login: "27972648395719857",
@@ -140,53 +143,92 @@ export function extractLsd(html: string): string | undefined {
 
 export interface PasswordKey {
   keyId: number;
-  publicKey: string;
-  version: number;
+  /** Curve25519 public key, as the 64-character hex Instagram publishes. */
+  publicKeyHex: string;
 }
 
 /**
  * Seal a password the way instagram.com does for `#PWD_BROWSER:10:…`.
  *
- * A one-off AES-256-GCM key encrypts the password; that key travels
- * RSA-encrypted under Instagram's published public key, and the timestamp is
- * bound in as additional authenticated data so a captured blob cannot be
+ * A one-off AES-256-GCM key encrypts the password; that key travels in a
+ * libsodium sealed box to Instagram's Curve25519 public key, and the timestamp
+ * is bound in as additional authenticated data so a captured blob cannot be
  * replayed under a different one.
+ *
+ * The layout was measured off a recorded login: 111 bytes for a 13-character
+ * password, which is
+ *
+ *   [1, keyId] | sealed box (32 ephemeral + 48) | GCM tag (16) | ciphertext
+ *
+ * with no room for an inline nonce — the GCM one is twelve zero bytes, and the
+ * sealed box carries its own.
  */
-export function encryptPassword(
+export async function encryptPassword(
   password: string,
   key: PasswordKey,
   timestampSeconds: number = Math.floor(Date.now() / 1000),
-  randomBytes: (size: number) => Buffer = crypto.randomBytes,
-): string {
-  const aesKey = randomBytes(32);
-  const iv = Buffer.alloc(12, 0);
+): Promise<string> {
+  const sodium = (await import("libsodium-wrappers")).default;
+  await sodium.ready;
+
+  const aesKey = crypto.randomBytes(32);
   const time = String(timestampSeconds);
 
-  const rsaEncrypted = crypto.publicEncrypt(
-    { key: key.publicKey, padding: crypto.constants.RSA_PKCS1_PADDING },
-    aesKey,
+  const sealed = Buffer.from(
+    sodium.crypto_box_seal(aesKey, Buffer.from(key.publicKeyHex, "hex")),
   );
 
-  const cipher = crypto.createCipheriv("aes-256-gcm", aesKey, iv);
+  const cipher = crypto.createCipheriv(
+    "aes-256-gcm",
+    aesKey,
+    Buffer.alloc(12, 0),
+  );
   cipher.setAAD(Buffer.from(time));
-  const encrypted = Buffer.concat([
+  const ciphertext = Buffer.concat([
     cipher.update(password, "utf8"),
     cipher.final(),
   ]);
 
-  const rsaLength = Buffer.alloc(2);
-  rsaLength.writeInt16LE(rsaEncrypted.byteLength, 0);
-
   const payload = Buffer.concat([
     Buffer.from([1, key.keyId]),
-    iv,
-    rsaLength,
-    rsaEncrypted,
+    sealed,
     cipher.getAuthTag(),
-    encrypted,
+    ciphertext,
   ]).toString("base64");
 
-  return `#PWD_INSTAGRAM_BROWSER:${key.version}:${time}:${payload}`;
+  return `#PWD_BROWSER:${PASSWORD_SCHEME_VERSION}:${time}:${payload}`;
+}
+
+/**
+ * Find the Curve25519 key Instagram seals passwords to.
+ *
+ * The browser has it inlined in the login page; older builds also served it
+ * from the shared-data endpoint. Both shapes are tried, since neither is
+ * promised to stay.
+ */
+export function extractPasswordKey(source: string): PasswordKey | undefined {
+  const shapes = [
+    // "public_key_and_id_for_encryption":{"public_key":"…","key_id":189}
+    /"public_key_and_id_for_encryption"\s*:\s*\{[^}]*?"public_key"\s*:\s*"([0-9a-f]{64})"[^}]*?"key_id"\s*:\s*"?(\d+)"?/i,
+    // "encryption":{"key_id":"…","public_key":"…"}
+    /"encryption"\s*:\s*\{[^}]*?"key_id"\s*:\s*"?(\d+)"?[^}]*?"public_key"\s*:\s*"([0-9a-f]{64})"/i,
+  ];
+
+  const withKeyFirst = shapes[0]?.exec(source);
+  if (withKeyFirst?.[1] && withKeyFirst[2]) {
+    return {
+      publicKeyHex: withKeyFirst[1],
+      keyId: Number(withKeyFirst[2]),
+    };
+  }
+  const withIdFirst = shapes[1]?.exec(source);
+  if (withIdFirst?.[1] && withIdFirst[2]) {
+    return {
+      keyId: Number(withIdFirst[1]),
+      publicKeyHex: withIdFirst[2],
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -282,39 +324,49 @@ export class InstagramGraphqlLogin {
    * for the key the password is sealed with.
    */
   async prepare(): Promise<void> {
+    const tried: string[] = [];
+
+    // The login page is where the browser gets both the token and the key.
     const page = await this.request(
       this.url(LOGIN_PAGE_PATH),
       { method: "GET" },
       "page",
     );
-    this.lsd = extractLsd(await page.text());
+    const html = await page.text();
+    tried.push(`login page (HTTP ${page.status})`);
+    this.lsd = extractLsd(html);
+    this.passwordKey = extractPasswordKey(html);
 
-    const shared = await this.request(
-      this.url(SHARED_DATA_PATH),
-      { method: "GET" },
-      "api",
-    );
-    if (shared.ok) {
-      const config = asRecord(asRecord(await shared.json()).config);
-      this.lsd ??= asString(config.csrf_token);
-      const encryption = asRecord(config.encryption);
-      const publicKey = asString(encryption.public_key);
-      const keyId = Number(encryption.key_id);
-      const version = Number(encryption.version);
-      if (publicKey && Number.isInteger(keyId)) {
-        this.passwordKey = {
-          keyId,
-          publicKey: `-----BEGIN PUBLIC KEY-----\n${publicKey}\n-----END PUBLIC KEY-----`,
-          version: Number.isInteger(version) ? version : 10,
-        };
+    // Older builds also served both from the shared-data endpoint.
+    if (!this.lsd || !this.passwordKey) {
+      try {
+        const shared = await this.request(
+          this.url(SHARED_DATA_PATH),
+          { method: "GET" },
+          "api",
+        );
+        tried.push(`shared_data (HTTP ${shared.status})`);
+        if (shared.ok) {
+          const text = await shared.text();
+          this.passwordKey ??= extractPasswordKey(text);
+          const config = asRecord(asRecord(JSON.parse(text)).config);
+          this.lsd ??= asString(config.csrf_token);
+        }
+      } catch {
+        tried.push("shared_data (unreachable)");
       }
     }
 
     if (!this.lsd) {
-      throw new Error("Instagram did not hand out a login token");
+      throw new Error(
+        `Instagram did not hand out a login token — tried ${tried.join(", ")}`,
+      );
     }
     if (!this.passwordKey) {
-      throw new Error("Instagram did not publish its password encryption key");
+      throw new Error(
+        `Instagram did not publish its password encryption key — tried ${tried.join(", ")}. ` +
+          "Its web client has probably moved the key again; use the cookie option meanwhile.",
+      );
     }
   }
 
@@ -322,7 +374,7 @@ export class InstagramGraphqlLogin {
     if (!this.passwordKey) {
       return { kind: "ERROR", message: "Login was not prepared" };
     }
-    const encrypted = encryptPassword(password, this.passwordKey);
+    const encrypted = await encryptPassword(password, this.passwordKey);
 
     const variables = {
       input: {

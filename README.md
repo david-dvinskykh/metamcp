@@ -635,7 +635,8 @@ stays disabled until a code is genuinely in hand.
 
 The sign-in drives the same three GraphQL mutations instagram.com does — `useCDSWebLoginMutation`,
 `useTwoStepVerificationSendCodeMutation`, `useTwoFactorLoginValidateCodeMutation` — with the
-password sealed under Instagram's published key the way the browser seals it. Those mutations
+password sealed the way the browser seals it: a one-off AES-256-GCM key inside a libsodium
+sealed box addressed to the Curve25519 key Instagram inlines in the login page. Those mutations
 are addressed by persisted-query ids, which Instagram rotates when it ships a new web client;
 they live together in `PERSISTED_QUERIES` in `apps/backend/src/lib/instagram/graphql-login.ts`.
 When one goes stale the dialog says the sign-in can no longer run and points at the cookie

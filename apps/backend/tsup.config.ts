@@ -23,6 +23,8 @@ export default defineConfig({
     "drizzle-orm",
     "express",
     "helmet",
+    // Ships a wasm blob loaded at runtime; bundling it breaks the loader.
+    "libsodium-wrappers",
     "nanoid",
     "pg",
     "qrcode",

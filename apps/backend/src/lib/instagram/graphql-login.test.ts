@@ -6,6 +6,7 @@ import {
   computeJazoest,
   encryptPassword,
   extractLsd,
+  extractPasswordKey,
   parseTwoFactorResult,
 } from "./graphql-login";
 
@@ -40,73 +41,117 @@ describe("extractLsd", () => {
 });
 
 describe("encryptPassword", () => {
-  it("produces a blob Instagram's private key would open", () => {
-    const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
-      modulusLength: 2048,
-      publicKeyEncoding: { type: "spki", format: "pem" },
-      privateKeyEncoding: { type: "pkcs8", format: "pem" },
-    });
+  it("seals to Instagram's key in the layout a real login used", async () => {
+    const sodium = (await import("libsodium-wrappers")).default;
+    await sodium.ready;
+    const pair = sodium.crypto_box_keypair();
+    const publicKeyHex = Buffer.from(pair.publicKey).toString("hex");
 
-    const sealed = encryptPassword(
-      "hunter2",
-      { keyId: 10, publicKey, version: 10 },
+    const sealed = await encryptPassword(
+      "a-13-char-pwd",
+      { keyId: 173, publicKeyHex },
       1788258998,
     );
 
     const [marker, version, time = "", payload = ""] = sealed.split(":");
-    expect(marker).toBe("#PWD_INSTAGRAM_BROWSER");
+    expect(marker).toBe("#PWD_BROWSER");
     expect(version).toBe("10");
     expect(time).toBe("1788258998");
 
-    // Unpack exactly as the server would: header, iv, RSA-wrapped AES key,
-    // auth tag, ciphertext — with the timestamp bound in as AAD.
     const buffer = Buffer.from(payload, "base64");
+    // Measured off the recording: 2 header + 80 sealed box + 16 tag + 13 body.
+    expect(buffer).toHaveLength(2 + 80 + 16 + 13);
     expect(buffer[0]).toBe(1);
-    expect(buffer[1]).toBe(10);
-    const iv = buffer.subarray(2, 14);
-    const rsaLength = buffer.readInt16LE(14);
-    const rsaEncrypted = buffer.subarray(16, 16 + rsaLength);
-    const authTag = buffer.subarray(16 + rsaLength, 32 + rsaLength);
-    const ciphertext = buffer.subarray(32 + rsaLength);
+    expect(buffer[1]).toBe(173);
 
-    const aesKey = crypto.privateDecrypt(
-      { key: privateKey, padding: crypto.constants.RSA_PKCS1_PADDING },
-      rsaEncrypted,
+    // Open it exactly as Instagram would.
+    const aesKey = sodium.crypto_box_seal_open(
+      buffer.subarray(2, 82),
+      pair.publicKey,
+      pair.privateKey,
     );
-    const decipher = crypto.createDecipheriv("aes-256-gcm", aesKey, iv);
+    const decipher = crypto.createDecipheriv(
+      "aes-256-gcm",
+      Buffer.from(aesKey),
+      Buffer.alloc(12, 0),
+    );
     decipher.setAAD(Buffer.from(time));
-    decipher.setAuthTag(authTag);
+    decipher.setAuthTag(buffer.subarray(82, 98));
     const plaintext = Buffer.concat([
-      decipher.update(ciphertext),
+      decipher.update(buffer.subarray(98)),
       decipher.final(),
     ]).toString("utf8");
 
-    expect(plaintext).toBe("hunter2");
+    expect(plaintext).toBe("a-13-char-pwd");
   });
 
-  it("binds the timestamp, so a blob cannot be replayed under another", () => {
-    const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
-      modulusLength: 2048,
-      publicKeyEncoding: { type: "spki", format: "pem" },
-      privateKeyEncoding: { type: "pkcs8", format: "pem" },
-    });
-    const sealed = encryptPassword(
+  it("binds the timestamp, so a blob cannot be replayed under another", async () => {
+    const sodium = (await import("libsodium-wrappers")).default;
+    await sodium.ready;
+    const pair = sodium.crypto_box_keypair();
+
+    const sealed = await encryptPassword(
       "hunter2",
-      { keyId: 10, publicKey, version: 10 },
+      {
+        keyId: 173,
+        publicKeyHex: Buffer.from(pair.publicKey).toString("hex"),
+      },
       1788258998,
     );
     const buffer = Buffer.from(sealed.split(":")[3] ?? "", "base64");
-    const iv = buffer.subarray(2, 14);
-    const rsaLength = buffer.readInt16LE(14);
-    const aesKey = crypto.privateDecrypt(
-      { key: privateKey, padding: crypto.constants.RSA_PKCS1_PADDING },
-      buffer.subarray(16, 16 + rsaLength),
+    const aesKey = sodium.crypto_box_seal_open(
+      buffer.subarray(2, 82),
+      pair.publicKey,
+      pair.privateKey,
     );
-    const decipher = crypto.createDecipheriv("aes-256-gcm", aesKey, iv);
+    const decipher = crypto.createDecipheriv(
+      "aes-256-gcm",
+      Buffer.from(aesKey),
+      Buffer.alloc(12, 0),
+    );
     decipher.setAAD(Buffer.from("1788258999")); // one second off
-    decipher.setAuthTag(buffer.subarray(16 + rsaLength, 32 + rsaLength));
-    decipher.update(buffer.subarray(32 + rsaLength));
+    decipher.setAuthTag(buffer.subarray(82, 98));
+    decipher.update(buffer.subarray(98));
     expect(() => decipher.final()).toThrow();
+  });
+
+  it("uses a fresh wrapped key each time", async () => {
+    const sodium = (await import("libsodium-wrappers")).default;
+    await sodium.ready;
+    const publicKeyHex = Buffer.from(
+      sodium.crypto_box_keypair().publicKey,
+    ).toString("hex");
+    const key = { keyId: 173, publicKeyHex };
+
+    const first = await encryptPassword("hunter2", key, 1788258998);
+    const second = await encryptPassword("hunter2", key, 1788258998);
+    expect(first).not.toBe(second);
+  });
+});
+
+describe("extractPasswordKey", () => {
+  it("reads the key the login page inlines", () => {
+    // Field names and the hex shape are from a recorded response.
+    const html = `{"public_key_and_id_for_encryption":{"public_key":"${"ab".repeat(32)}","key_id":189}}`;
+    expect(extractPasswordKey(html)).toEqual({
+      publicKeyHex: "ab".repeat(32),
+      keyId: 189,
+    });
+  });
+
+  it("reads the older shared-data shape, where the id comes first", () => {
+    const json = `{"encryption":{"key_id":"173","public_key":"${"cd".repeat(32)}","version":"10"}}`;
+    expect(extractPasswordKey(json)).toEqual({
+      keyId: 173,
+      publicKeyHex: "cd".repeat(32),
+    });
+  });
+
+  it("ignores anything that is not a 32-byte hex key", () => {
+    expect(
+      extractPasswordKey('{"encryption":{"key_id":"1","public_key":"short"}}'),
+    ).toBeUndefined();
+    expect(extractPasswordKey("<html></html>")).toBeUndefined();
   });
 });
 
