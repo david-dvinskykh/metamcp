@@ -119,6 +119,19 @@ describe("interpretLoginResponse", () => {
     });
   });
 
+  it("turns Instagram's CSRF wording into something actionable", () => {
+    expect(
+      interpretLoginResponse(403, {
+        message: "CSRF token missing or incorrect",
+        status: "fail",
+      }),
+    ).toEqual({
+      kind: "ERROR",
+      message:
+        "Instagram would not accept a login from this server (it rejected the session token). Use the cookie paste option instead.",
+    });
+  });
+
   it("surfaces an unrecognised failure rather than passing it as success", () => {
     expect(
       interpretLoginResponse(400, {

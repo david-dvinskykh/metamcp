@@ -12,9 +12,21 @@
  */
 
 const BASE_URL = "https://www.instagram.com";
-const LOGIN_PAGE = `${BASE_URL}/accounts/login/`;
-const LOGIN_ENDPOINT = `${BASE_URL}/api/v1/web/accounts/login/ajax/`;
-const TWO_FACTOR_ENDPOINT = `${BASE_URL}/api/v1/web/accounts/login/ajax/two_factor/`;
+const LOGIN_PAGE_PATH = "/accounts/login/";
+const LOGIN_PATH = "/api/v1/web/accounts/login/ajax/";
+const TWO_FACTOR_PATH = "/api/v1/web/accounts/login/ajax/two_factor/";
+/** JSON view of the page config; the reliable source of a usable CSRF token. */
+const SHARED_DATA_PATH = "/data/shared_data/";
+
+/**
+ * Instagram hands this literal value to a client it does not recognise as a
+ * browser. Sending it back is what produces "CSRF token missing or incorrect",
+ * so it is treated as no token at all.
+ */
+const PLACEHOLDER_CSRF_TOKEN = "missing";
+
+/** Redirect hops to follow by hand, harvesting cookies from each one. */
+const MAX_REDIRECTS = 3;
 
 /** Instagram's own web client id. Requests without it are answered with 403. */
 const WEB_APP_ID = "936619743392459";
@@ -51,6 +63,9 @@ export type InstagramLoginOutcome =
   | { kind: "ERROR"; message: string };
 
 type JsonRecord = Record<string, unknown>;
+
+/** A browser-style navigation, or the XHR the page's own script would send. */
+type RequestMode = "page" | "api";
 
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" ? (value as JsonRecord) : {};
@@ -97,6 +112,16 @@ export function interpretLoginResponse(
     return {
       kind: "CHECKPOINT",
       url: path ? new URL(path, BASE_URL).toString() : undefined,
+    };
+  }
+
+  // Instagram's wording for this is meaningless to whoever clicked the button,
+  // and there is nothing they can do about it in the dialog's login path.
+  if (typeof message === "string" && /csrf token/i.test(message)) {
+    return {
+      kind: "ERROR",
+      message:
+        "Instagram would not accept a login from this server (it rejected the session token). Use the cookie paste option instead.",
     };
   }
 
@@ -170,14 +195,66 @@ export function parseSetCookies(headers: Headers): Array<[string, string]> {
  */
 export class InstagramWebLoginSession {
   private readonly jar = new Map<string, string>();
+  private readonly baseUrl: string;
 
-  /** Fetch the login page so Instagram issues the csrftoken it then requires. */
+  /** `baseUrl` exists so the flow can be exercised against a stand-in server. */
+  constructor({ baseUrl = BASE_URL }: { baseUrl?: string } = {}) {
+    this.baseUrl = baseUrl.replace(/\/$/, "");
+  }
+
+  /**
+   * Collect the anonymous cookie set Instagram requires before a login.
+   *
+   * The login page is fetched the way a browser fetches it — no XHR headers,
+   * following redirects and keeping the cookies each hop sets. When that still
+   * leaves us without a real token (Instagram answers `csrftoken=missing` to a
+   * client it does not take for a browser), the page's own JSON config is
+   * asked instead, which always carries one.
+   */
   async prepare(): Promise<void> {
-    const response = await this.request(LOGIN_PAGE, { method: "GET" });
-    if (!this.jar.get("csrftoken")) {
+    const response = await this.request(
+      this.url(LOGIN_PAGE_PATH),
+      { method: "GET" },
+      "page",
+    );
+
+    if (!this.usableCsrfToken()) {
+      await this.fetchTokenFromSharedData();
+    }
+
+    if (!this.usableCsrfToken()) {
       throw new Error(
         `Instagram did not issue a CSRF token (HTTP ${response.status})`,
       );
+    }
+  }
+
+  /** `csrftoken` from the jar, unless it is the placeholder or absent. */
+  private usableCsrfToken(): string | undefined {
+    const token = this.jar.get("csrftoken");
+    return token && token !== PLACEHOLDER_CSRF_TOKEN ? token : undefined;
+  }
+
+  /**
+   * `/data/shared_data/` returns the config the page would have inlined,
+   * `config.csrf_token` included. Failures are swallowed: prepare() reports the
+   * missing token itself, and this is only ever the second attempt at it.
+   */
+  private async fetchTokenFromSharedData(): Promise<void> {
+    try {
+      const response = await this.request(
+        this.url(SHARED_DATA_PATH),
+        { method: "GET" },
+        "api",
+      );
+      if (!response.ok) return;
+      const config = asRecord(asRecord(await response.json()).config);
+      const token = asString(config.csrf_token);
+      if (token && token !== PLACEHOLDER_CSRF_TOKEN) {
+        this.jar.set("csrftoken", token);
+      }
+    } catch {
+      // Leave the jar as it is; prepare() decides what to do about it.
     }
   }
 
@@ -191,7 +268,7 @@ export class InstagramWebLoginSession {
       Date.now() / 1000,
     )}:${password}`;
 
-    return this.postCredentials(LOGIN_ENDPOINT, {
+    return this.postCredentials(this.url(LOGIN_PATH), {
       username,
       enc_password: encPassword,
       queryParams: "{}",
@@ -206,7 +283,7 @@ export class InstagramWebLoginSession {
     code: string,
     method: TwoFactorMethod,
   ): Promise<InstagramLoginOutcome> {
-    return this.postCredentials(TWO_FACTOR_ENDPOINT, {
+    return this.postCredentials(this.url(TWO_FACTOR_PATH), {
       username,
       verificationCode: code,
       identifier,
@@ -233,11 +310,15 @@ export class InstagramWebLoginSession {
     let response: Response;
     let body: unknown;
     try {
-      response = await this.request(url, {
-        method: "POST",
-        body: new URLSearchParams(fields).toString(),
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      });
+      response = await this.request(
+        url,
+        {
+          method: "POST",
+          body: new URLSearchParams(fields).toString(),
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        },
+        "api",
+      );
       const text = await response.text();
       try {
         body = JSON.parse(text);
@@ -276,34 +357,102 @@ export class InstagramWebLoginSession {
     };
   }
 
-  private async request(url: string, init: RequestInit): Promise<Response> {
-    const csrfToken = this.jar.get("csrftoken");
-    const response = await fetch(url, {
-      ...init,
-      redirect: "manual",
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      headers: {
-        "User-Agent": USER_AGENT,
-        Accept: "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "X-IG-App-ID": WEB_APP_ID,
-        "X-Requested-With": "XMLHttpRequest",
-        Referer: LOGIN_PAGE,
-        Origin: BASE_URL,
-        ...(csrfToken ? { "X-CSRFToken": csrfToken } : {}),
-        ...(this.jar.size > 0 ? { Cookie: this.cookieHeader() } : {}),
-        ...init.headers,
-      },
-    });
+  private url(path: string): string {
+    return `${this.baseUrl}${path}`;
+  }
 
-    for (const [name, value] of parseSetCookies(response.headers)) {
-      if (value === "" || value === '""') {
-        this.jar.delete(name);
-      } else {
-        this.jar.set(name, value);
-      }
+  /**
+   * Headers for the two kinds of request this flow makes.
+   *
+   * `page` is a plain navigation, the way a browser loads the login form:
+   * sending XHR headers there is what makes Instagram treat the caller as a
+   * script and answer with a placeholder CSRF token. `api` is the XHR the
+   * page's own JavaScript would send.
+   */
+  private headersFor(mode: RequestMode): Record<string, string> {
+    const common = {
+      "User-Agent": USER_AGENT,
+      "Accept-Language": "en-US,en;q=0.9",
+      "Accept-Encoding": "gzip, deflate",
+    };
+
+    if (mode === "page") {
+      return {
+        ...common,
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+      };
     }
-    return response;
+
+    const csrfToken = this.usableCsrfToken();
+    return {
+      ...common,
+      Accept: "*/*",
+      "X-IG-App-ID": WEB_APP_ID,
+      "X-Requested-With": "XMLHttpRequest",
+      "X-Instagram-AJAX": "1",
+      "Sec-Fetch-Dest": "empty",
+      "Sec-Fetch-Mode": "cors",
+      "Sec-Fetch-Site": "same-origin",
+      Referer: this.url(LOGIN_PAGE_PATH),
+      Origin: this.baseUrl,
+      ...(csrfToken ? { "X-CSRFToken": csrfToken } : {}),
+    };
+  }
+
+  /**
+   * One request, with the cookie jar applied and updated.
+   *
+   * Redirects are followed by hand rather than by `redirect: "follow"`: fetch
+   * only exposes the final response's headers, and Instagram sets the cookies
+   * that matter — `csrftoken`, `mid`, `ig_did` — on the hops along the way.
+   */
+  private async request(
+    url: string,
+    init: RequestInit,
+    mode: RequestMode,
+  ): Promise<Response> {
+    let current = url;
+
+    for (let hop = 0; ; hop++) {
+      const response = await fetch(current, {
+        ...init,
+        redirect: "manual",
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        headers: {
+          ...this.headersFor(mode),
+          ...(this.jar.size > 0 ? { Cookie: this.cookieHeader() } : {}),
+          ...init.headers,
+        },
+      });
+
+      for (const [name, value] of parseSetCookies(response.headers)) {
+        if (value === "" || value === '""') {
+          this.jar.delete(name);
+        } else {
+          this.jar.set(name, value);
+        }
+      }
+
+      const location = response.headers.get("location");
+      const isRedirect = response.status >= 300 && response.status < 400;
+      // Only GETs are chased: re-POSTing credentials to wherever Instagram
+      // points is not something to do automatically.
+      if (
+        !isRedirect ||
+        !location ||
+        hop >= MAX_REDIRECTS ||
+        (init.method ?? "GET").toUpperCase() !== "GET"
+      ) {
+        return response;
+      }
+      current = new URL(location, current).toString();
+    }
   }
 
   private cookieHeader(): string {
