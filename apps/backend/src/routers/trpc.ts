@@ -13,6 +13,7 @@ import { mcpRequestAuditLogsImplementations } from "../trpc/mcp-request-audit-lo
 import { mcpServersImplementations } from "../trpc/mcp-servers.impl";
 import { namespacesImplementations } from "../trpc/namespaces.impl";
 import { oauthImplementations } from "../trpc/oauth.impl";
+import { telegramImplementations } from "../trpc/telegram.impl";
 import { toolsImplementations } from "../trpc/tools.impl";
 
 // Create the app router with implementations
@@ -27,6 +28,7 @@ const appRouter = createAppRouter({
     config: configImplementations,
     logs: logsImplementations,
     mcpRequestAuditLogs: mcpRequestAuditLogsImplementations,
+    telegram: telegramImplementations,
   },
 });
 

@@ -58,6 +58,7 @@ English | [简体中文](./README_cn.md)
 - [❄️ Cold Start Problem and Custom Dockerfile](#️-cold-start-problem-and-custom-dockerfile)
 - [🧾 Log Levels](#-log-levels)
 - [📎 Direct File Transfers (Telegram → Google Drive, without burning tokens)](#-direct-file-transfers-telegram--google-drive-without-burning-tokens)
+- [💬 One-Click Telegram Connector](#-one-click-telegram-connector)
 - [🔐 Authentication](#-authentication)
 - [🚦 Traffic Management](#-traffic-management)
   - [🚧 **MCP Rate Limit**](#-mcp-rate-limit)
@@ -552,6 +553,57 @@ three of `GOOGLE_DRIVE_CLIENT_ID`, `GOOGLE_DRIVE_CLIENT_SECRET` and
   `FILE_RELAY_LOCAL_PATH_ROOTS`.
 - Staged files live in a `0700` directory, are deleted as soon as delivery finishes, and expire
   on a timer if a transfer is abandoned.
+
+## 💬 One-Click Telegram Connector
+
+Connecting a Telegram **user account** to an MCP server normally means cloning the server's
+repo, running its interactive `session_string_generator.py`, typing a phone number, a login
+code and a cloud password into a terminal, then copy-pasting the resulting session string into
+MetaMCP by hand.
+
+**MCP Servers → Connect Telegram** does all of that in the browser:
+
+1. Enter the connector's name. The Telegram `api_id` / `api_hash` come from the backend's
+   environment (see below); the dialog asks for them only when the deployment has none, or
+   when you choose a different application for this one login.
+2. MetaMCP opens an MTProto QR login and shows the code. Scan it in Telegram
+   (**Settings → Devices → Link Desktop Device**); the code refreshes itself until you do.
+3. If the account has two-step verification, MetaMCP asks for the cloud password and completes
+   the login with it.
+4. Confirm the account it signed in as, and the STDIO MCP server is created with
+
+   ```
+   TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_STRING
+   ```
+
+   already filled in — the same variables `chigwell/telegram-mcp` and other Telethon-based
+   Telegram MCP servers read. The command defaults to `telegram-mcp` (the launcher baked into
+   the all-in-one image) and can be changed under **Advanced settings**.
+
+The session string is written in Telethon's own `StringSession` format, so it drops straight
+into a Python Telegram MCP server.
+
+**Configuring the application.** Register one app at
+[my.telegram.org/apps](https://my.telegram.org/apps) and give the MetaMCP backend:
+
+| Variable | Meaning |
+| --- | --- |
+| `TELEGRAM_API_ID` | The application's numeric ID. |
+| `TELEGRAM_API_HASH` | The application's 32-character hex hash. |
+
+With both set, every user of this MetaMCP only has to scan a QR — and the `api_hash` never
+leaves the backend. Set only one of the two and the dialog says so rather than quietly falling
+back. With neither set the connector still works: each user enters their own credentials in the
+dialog. These are the same variable names the Telegram MCP servers read, so a deployment
+declares the application once.
+
+**Security notes.** The login runs entirely in the backend: the browser only ever receives the
+QR image and the current phase, never the MTProto auth key or the session string. A login is
+bound to the MetaMCP user who started it, is dropped after 10 minutes of inactivity, and its
+session string can be spent on exactly one MCP server. Closing the dialog cancels the login and
+disconnects it — MetaMCP never calls `auth.logOut`, so the credential handed to the MCP server
+stays valid. The session string is an account credential with the same power as the account
+itself; it is stored in the server's environment variables like any other MCP secret.
 
 ## 🔐 Authentication
 

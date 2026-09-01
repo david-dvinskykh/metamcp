@@ -6,6 +6,7 @@ import { createMcpRequestAuditLogsRouter } from "./mcp-request-audit-logs";
 import { createMcpServersRouter } from "./mcp-servers";
 import { createNamespacesRouter } from "./namespaces";
 import { createOAuthRouter } from "./oauth";
+import { createTelegramRouter } from "./telegram";
 import { createToolsRouter } from "./tools";
 
 export { createMcpServersRouter };
@@ -13,6 +14,7 @@ export { createNamespacesRouter };
 export { createEndpointsRouter };
 export { createOAuthRouter };
 export { createToolsRouter };
+export { createTelegramRouter };
 export { createApiKeysRouter };
 export { createConfigRouter };
 export { createMcpRequestAuditLogsRouter };
@@ -27,6 +29,7 @@ export const createFrontendRouter = (implementations: {
   config: Parameters<typeof createConfigRouter>[0];
   logs: Parameters<typeof createLogsRouter>[0];
   mcpRequestAuditLogs: Parameters<typeof createMcpRequestAuditLogsRouter>[0];
+  telegram: Parameters<typeof createTelegramRouter>[0];
 }) => {
   return {
     mcpServers: createMcpServersRouter(implementations.mcpServers),
@@ -40,5 +43,6 @@ export const createFrontendRouter = (implementations: {
     mcpRequestAuditLogs: createMcpRequestAuditLogsRouter(
       implementations.mcpRequestAuditLogs,
     ),
+    telegram: createTelegramRouter(implementations.telegram),
   };
 };
