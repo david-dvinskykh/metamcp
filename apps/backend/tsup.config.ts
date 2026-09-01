@@ -25,8 +25,12 @@ export default defineConfig({
     "helmet",
     "nanoid",
     "pg",
+    "qrcode",
     "shell-quote",
     "spawn-rx",
+    // GramJS ships its own CommonJS graph with dynamic requires; bundling it
+    // breaks the MTProto crypto lookups, so keep it resolved at runtime.
+    "telegram",
     "zod",
   ],
 });

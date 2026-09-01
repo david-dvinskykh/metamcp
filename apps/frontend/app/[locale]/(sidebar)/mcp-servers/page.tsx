@@ -43,6 +43,7 @@ import { createTranslatedZodResolver } from "@/lib/zod-resolver";
 
 import { ExportImportButtons } from "./export-import-buttons";
 import { McpServersList } from "./mcp-servers-list";
+import { TelegramConnectorButton } from "./telegram-connector-button";
 
 export default function McpServersPage() {
   const { t } = useTranslations();
@@ -210,6 +211,7 @@ export default function McpServersPage() {
         </div>
         <div className="flex items-center gap-2">
           <ExportImportButtons />
+          <TelegramConnectorButton />
           <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
             <DialogTrigger asChild>
               <Button>
