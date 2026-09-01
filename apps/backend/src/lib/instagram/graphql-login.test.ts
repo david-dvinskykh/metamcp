@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildLoginVariables,
   computeJazoest,
   describeEmptyLoginResult,
   encryptPassword,
@@ -128,6 +129,102 @@ describe("encryptPassword", () => {
     const first = await encryptPassword("hunter2", key, 1788258998);
     const second = await encryptPassword("hunter2", key, 1788258998);
     expect(first).not.toBe(second);
+  });
+});
+
+/**
+ * Field names and types of the login mutation's input, exactly as a recorded
+ * browser login sent them. Sending a subset earned
+ * `noncoercible_variable_value` from the server, so the shape is pinned here.
+ */
+const RECORDED_INPUT_TYPES: Record<string, string> = {
+  actor_id: "string",
+  client_mutation_id: "string",
+  access_flow_version: "string",
+  account_recovery_entry_point: "null",
+  app: "string",
+  auth_domain_data_key: "null",
+  caa_login_request_extra_info: "object",
+  credential_type: "string",
+  dyi_job_id: "string",
+  enc_password: "object",
+  event_request_id: "string",
+  identifier: "string",
+  ig_web_device_id: "string",
+  initial_request_id: "string",
+  lids: "null",
+  login_source: "string",
+  next: "null",
+  passkey_payload: "null",
+  password: "object",
+  persistent: "boolean",
+  query_params: "string",
+  trusted_device_records: "string",
+  use_uid_to_login: "boolean",
+  waterfall_id: "string",
+};
+
+const RECORDED_EXTRA_INFO_KEYS = [
+  "ab_test_data",
+  "shared_prefs_data",
+  "cuid",
+  "guid",
+  "jazoest",
+  "lgndim",
+  "lgnjs",
+  "lgnrnd",
+  "locale",
+  "login_source",
+  "lsd",
+  "next",
+  "prefill_contact_point",
+  "prefill_source",
+  "prefill_type",
+  "skstamp",
+  "timezone",
+];
+
+const typeOf = (value: unknown) => (value === null ? "null" : typeof value);
+
+describe("buildLoginVariables", () => {
+  const variables = buildLoginVariables({
+    identifier: "someone",
+    encryptedPassword: "#PWD_BROWSER:10:1:sealed",
+    deviceId: "DEVICE-ID",
+    eventRequestId: "event-id",
+    waterfallId: "waterfall-id",
+    loginTimeSeconds: 1788258988,
+  });
+  const input = (variables.input ?? {}) as Record<string, unknown>;
+
+  it("carries every field the recorded login sent, with the same types", () => {
+    const actual = Object.fromEntries(
+      Object.entries(input).map(([key, value]) => [key, typeOf(value)]),
+    );
+    expect(actual).toEqual(RECORDED_INPUT_TYPES);
+  });
+
+  it("fills in the whole extra-info object, not a useful-looking subset", () => {
+    const extra = input.caa_login_request_extra_info as Record<string, unknown>;
+    expect(Object.keys(extra).sort()).toEqual(
+      [...RECORDED_EXTRA_INFO_KEYS].sort(),
+    );
+    // The empty strings are values the browser sends, not gaps to be filled.
+    expect(Object.values(extra).every((v) => typeof v === "string")).toBe(true);
+    expect(extra.guid).toBe("DEVICE-ID");
+    expect(extra.lgnjs).toBe("1788258988");
+    expect(extra.login_source).toBe("caa_login");
+  });
+
+  it("puts the sealed password in both password fields", () => {
+    expect(input.enc_password).toEqual({
+      sensitive_string_value: "#PWD_BROWSER:10:1:sealed",
+    });
+    expect(input.password).toEqual(input.enc_password);
+  });
+
+  it("sends scale as the number the recording used", () => {
+    expect(variables.scale).toBe(2);
   });
 });
 

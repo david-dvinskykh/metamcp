@@ -180,6 +180,74 @@ export function extractBuildParams(html: string): BuildParams {
   };
 }
 
+/**
+ * The login mutation's input, field for field as instagram.com sends it.
+ *
+ * Every field is here on purpose. Sending a subset earns
+ * `noncoercible_variable_value` from the server: the input object's members are
+ * not optional, and a missing one cannot be coerced into the schema's type. The
+ * empty strings and nulls below are what the browser sends for a plain
+ * password login with nothing prefilled — they are values, not placeholders.
+ */
+export function buildLoginVariables(params: {
+  identifier: string;
+  encryptedPassword: string;
+  deviceId: string;
+  eventRequestId: string;
+  waterfallId: string;
+  loginTimeSeconds: number;
+}): Record<string, unknown> {
+  const sensitive = { sensitive_string_value: params.encryptedPassword };
+
+  return {
+    input: {
+      client_mutation_id: "1",
+      actor_id: "0",
+      access_flow_version: "pre_mt_behavior",
+      account_recovery_entry_point: null,
+      app: "instagram",
+      auth_domain_data_key: null,
+      caa_login_request_extra_info: {
+        ab_test_data: "",
+        shared_prefs_data: "",
+        cuid: "",
+        guid: params.deviceId,
+        jazoest: "",
+        lgndim: "",
+        lgnjs: String(params.loginTimeSeconds),
+        lgnrnd: "",
+        locale: "",
+        login_source: "caa_login",
+        lsd: "",
+        next: "",
+        prefill_contact_point: "",
+        prefill_source: "",
+        prefill_type: "",
+        skstamp: "",
+        timezone: "",
+      },
+      credential_type: "password",
+      dyi_job_id: "",
+      enc_password: sensitive,
+      event_request_id: params.eventRequestId,
+      identifier: params.identifier,
+      ig_web_device_id: params.deviceId,
+      initial_request_id: "1",
+      lids: null,
+      login_source: "COMET_HEADERLESS_LOGIN",
+      next: null,
+      passkey_payload: null,
+      password: sensitive,
+      persistent: true,
+      query_params: "{}",
+      trusted_device_records: "{}",
+      use_uid_to_login: false,
+      waterfall_id: params.waterfallId,
+    },
+    scale: 2,
+  };
+}
+
 export interface PasswordKey {
   keyId: number;
   /** Curve25519 public key, as the 64-character hex Instagram publishes. */
@@ -443,33 +511,14 @@ export class InstagramGraphqlLogin {
     }
     const encrypted = await encryptPassword(password, this.passwordKey);
 
-    const variables = {
-      input: {
-        client_mutation_id: "1",
-        actor_id: "0",
-        access_flow_version: "pre_mt_behavior",
-        app: "instagram",
-        credential_type: "password",
-        enc_password: { sensitive_string_value: encrypted },
-        password: { sensitive_string_value: encrypted },
-        identifier: username,
-        event_request_id: randomUUID(),
-        ig_web_device_id: this.deviceId,
-        initial_request_id: "1",
-        login_source: "COMET_HEADERLESS_LOGIN",
-        persistent: true,
-        query_params: "{}",
-        trusted_device_records: "{}",
-        use_uid_to_login: false,
-        waterfall_id: this.waterfallId,
-        caa_login_request_extra_info: {
-          guid: this.deviceId,
-          login_source: "caa_login",
-          lgnjs: String(Math.floor(Date.now() / 1000)),
-        },
-      },
-      scale: 1,
-    };
+    const variables = buildLoginVariables({
+      identifier: username,
+      encryptedPassword: encrypted,
+      deviceId: this.deviceId,
+      eventRequestId: randomUUID(),
+      waterfallId: this.waterfallId,
+      loginTimeSeconds: Math.floor(Date.now() / 1000),
+    });
 
     const result = await this.graphql(
       "useCDSWebLoginMutation",
