@@ -34,7 +34,39 @@ export const TelegramApiCredentialsSchema = z.object({
     .regex(/^[0-9a-fA-F]{32}$/, "api_hash must be 32 hexadecimal characters"),
 });
 
-export const StartTelegramLoginRequestSchema = TelegramApiCredentialsSchema;
+/**
+ * Credentials are optional: when the deployment sets TELEGRAM_API_ID and
+ * TELEGRAM_API_HASH on the MetaMCP backend, the browser sends neither and the
+ * backend uses its own. Passing them here overrides the server's pair for this
+ * one login. Either both or neither — a lone api_id has nothing to sign with.
+ */
+export const StartTelegramLoginRequestSchema = TelegramApiCredentialsSchema
+  .partial()
+  .refine(
+    (data) =>
+      (data.api_id === undefined) === (data.api_hash === undefined),
+    "Provide both api_id and api_hash, or neither to use the server's",
+  );
+
+/**
+ * What the connector dialog needs to know before it renders: whether the
+ * deployment already supplies credentials, and which application they belong
+ * to. Only the api_id is ever reported — the hash stays on the backend.
+ */
+export const TelegramConnectorDefaultsSchema = z.object({
+  /** True when the backend can start a login with no credentials from the UI. */
+  has_server_credentials: z.boolean(),
+  /** api_id the backend would use. Absent when nothing is configured. */
+  api_id: z.number().optional(),
+  /** Why configured credentials are unusable, for an operator to act on. */
+  problem: z.string().optional(),
+});
+
+export const TelegramConnectorDefaultsResponseSchema = z.object({
+  success: z.boolean(),
+  data: TelegramConnectorDefaultsSchema.optional(),
+  message: z.string().optional(),
+});
 
 /** Account the QR scan logged us in as — shown as a confirmation in the UI. */
 export const TelegramAccountSchema = z.object({
@@ -116,3 +148,6 @@ export type TelegramLoginStateResponse = z.infer<
   typeof TelegramLoginStateResponseSchema
 >;
 export type TelegramAccount = z.infer<typeof TelegramAccountSchema>;
+export type TelegramConnectorDefaults = z.infer<
+  typeof TelegramConnectorDefaultsSchema
+>;

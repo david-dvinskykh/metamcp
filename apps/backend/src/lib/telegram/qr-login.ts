@@ -9,6 +9,7 @@ import type { TelegramClient } from "telegram";
 
 import logger from "@/utils/logger";
 
+import { resolveEnvApiCredentials, TelegramApiCredentials } from "./config";
 import { encodeTelethonSessionString } from "./telethon-session";
 
 /**
@@ -110,13 +111,18 @@ class TelegramQrLoginManager {
 
   /**
    * Start a QR login and return the first QR to display.
-   * Any previous login of the same user beyond the cap is discarded.
+   *
+   * `override` is only for a caller that wants a different Telegram application
+   * than the deployment's; with it omitted the credentials come from
+   * TELEGRAM_API_ID / TELEGRAM_API_HASH. Any previous login of the same user
+   * beyond the cap is discarded.
    */
   async start(
     userId: string,
-    apiId: number,
-    apiHash: string,
+    override?: TelegramApiCredentials,
   ): Promise<TelegramLoginState> {
+    const { apiId, apiHash } = override ?? this.requireEnvCredentials();
+
     this.evictExpired();
     this.enforcePerUserLimit(userId);
 
@@ -301,6 +307,25 @@ class TelegramQrLoginManager {
   }
 
   // --- internals ---------------------------------------------------------
+
+  /**
+   * The deployment's Telegram application, or a message telling the operator
+   * exactly what to fix. Never falls through to a half-configured pair.
+   */
+  private requireEnvCredentials(): TelegramApiCredentials {
+    const resolution = resolveEnvApiCredentials();
+    if (resolution.status === "ok") {
+      return resolution.credentials;
+    }
+    if (resolution.status === "invalid") {
+      throw new TelegramLoginError(
+        `Telegram API credentials on this server are misconfigured: ${resolution.reason}`,
+      );
+    }
+    throw new TelegramLoginError(
+      "No Telegram API credentials configured. Set TELEGRAM_API_ID and TELEGRAM_API_HASH on the MetaMCP backend, or enter them for this login.",
+    );
+  }
 
   private require(userId: string, loginId: string): LoginSession {
     this.evictExpired();

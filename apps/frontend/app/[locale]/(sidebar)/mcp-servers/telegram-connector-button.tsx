@@ -8,6 +8,7 @@ import {
 import {
   ChevronDown,
   ExternalLink,
+  KeyRound,
   Loader2,
   RefreshCw,
   Send,
@@ -72,6 +73,8 @@ export function TelegramConnectorButton() {
   const [command, setCommand] = useState(TELEGRAM_MCP_DEFAULT_COMMAND);
   const [isPublic, setIsPublic] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  /** Set when the user chooses a different Telegram app than the server's. */
+  const [overrideCredentials, setOverrideCredentials] = useState(false);
 
   // Step 3 — cloud password (2FA)
   const [password, setPassword] = useState("");
@@ -79,6 +82,16 @@ export function TelegramConnectorButton() {
   const [loginState, setLoginState] = useState<TelegramLoginState | null>(null);
   const loginIdRef = useRef<string | null>(null);
   const pollInFlight = useRef(false);
+
+  // Only asked for once the dialog is open — an unconfigured deployment should
+  // not pay for the round-trip on every page load.
+  const { data: defaultsResponse } =
+    trpc.frontend.telegram.getDefaults.useQuery(undefined, { enabled: open });
+  const defaults = defaultsResponse?.success
+    ? defaultsResponse.data
+    : undefined;
+  const usesServerCredentials =
+    Boolean(defaults?.has_server_credentials) && !overrideCredentials;
 
   const startLogin = trpc.frontend.telegram.startLogin.useMutation();
   const pollLogin = trpc.frontend.telegram.getLoginState.useMutation();
@@ -102,6 +115,8 @@ export function TelegramConnectorButton() {
     setStep("credentials");
     setError(null);
     setPassword("");
+    setApiHash("");
+    setOverrideCredentials(false);
     setLoginState(null);
     loginIdRef.current = null;
   }, []);
@@ -172,21 +187,24 @@ export function TelegramConnectorButton() {
       setError(t("mcp-servers:telegram.invalidName"));
       return;
     }
-    const parsedApiId = Number(apiId.trim());
-    if (!Number.isInteger(parsedApiId) || parsedApiId <= 0) {
-      setError(t("mcp-servers:telegram.invalidApiId"));
-      return;
-    }
-    if (!/^[0-9a-fA-F]{32}$/.test(apiHash.trim())) {
-      setError(t("mcp-servers:telegram.invalidApiHash"));
-      return;
+    // With server credentials in play the browser sends none at all and the
+    // backend uses TELEGRAM_API_ID / TELEGRAM_API_HASH.
+    let credentials: { api_id: number; api_hash: string } | undefined;
+    if (!usesServerCredentials) {
+      const parsedApiId = Number(apiId.trim());
+      if (!Number.isInteger(parsedApiId) || parsedApiId <= 0) {
+        setError(t("mcp-servers:telegram.invalidApiId"));
+        return;
+      }
+      if (!/^[0-9a-fA-F]{32}$/.test(apiHash.trim())) {
+        setError(t("mcp-servers:telegram.invalidApiHash"));
+        return;
+      }
+      credentials = { api_id: parsedApiId, api_hash: apiHash.trim() };
     }
 
     try {
-      const response = await startLogin.mutateAsync({
-        api_id: parsedApiId,
-        api_hash: apiHash.trim(),
-      });
+      const response = await startLogin.mutateAsync(credentials ?? {});
       if (response.success && response.data) {
         applyState(response.data);
       } else {
@@ -288,45 +306,89 @@ export function TelegramConnectorButton() {
               />
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="telegram-api-id">
-                {t("mcp-servers:telegram.apiId")}
-              </Label>
-              <Input
-                id="telegram-api-id"
-                value={apiId}
-                onChange={(event) => setApiId(event.target.value)}
-                placeholder="1234567"
-                inputMode="numeric"
-                autoComplete="off"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="telegram-api-hash">
-                {t("mcp-servers:telegram.apiHash")}
-              </Label>
-              <Input
-                id="telegram-api-hash"
-                value={apiHash}
-                onChange={(event) => setApiHash(event.target.value)}
-                placeholder="0123456789abcdef0123456789abcdef"
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <p className="text-xs text-muted-foreground">
-                {t("mcp-servers:telegram.credentialsHelp")}{" "}
-                <a
-                  className="underline inline-flex items-center gap-1"
-                  href="https://my.telegram.org/apps"
-                  target="_blank"
-                  rel="noreferrer noopener"
+            {usesServerCredentials ? (
+              <div className="space-y-2 rounded-md border p-3">
+                <p className="flex items-start gap-2 text-sm">
+                  <KeyRound className="mt-0.5 h-4 w-4 shrink-0" />
+                  {defaults?.api_id
+                    ? t("mcp-servers:telegram.usingServerCredentialsWithId", {
+                        apiId: defaults.api_id,
+                      })
+                    : t("mcp-servers:telegram.usingServerCredentials")}
+                </p>
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground underline"
+                  onClick={() => setOverrideCredentials(true)}
                 >
-                  my.telegram.org/apps
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              </p>
-            </div>
+                  {t("mcp-servers:telegram.useOwnCredentials")}
+                </button>
+              </div>
+            ) : (
+              <>
+                {defaults?.problem && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    {t("mcp-servers:telegram.serverCredentialsProblem", {
+                      problem: defaults.problem,
+                    })}
+                  </p>
+                )}
+
+                <div className="space-y-2">
+                  <Label htmlFor="telegram-api-id">
+                    {t("mcp-servers:telegram.apiId")}
+                  </Label>
+                  <Input
+                    id="telegram-api-id"
+                    value={apiId}
+                    onChange={(event) => setApiId(event.target.value)}
+                    placeholder="1234567"
+                    inputMode="numeric"
+                    autoComplete="off"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="telegram-api-hash">
+                    {t("mcp-servers:telegram.apiHash")}
+                  </Label>
+                  <Input
+                    id="telegram-api-hash"
+                    value={apiHash}
+                    onChange={(event) => setApiHash(event.target.value)}
+                    placeholder="0123456789abcdef0123456789abcdef"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t("mcp-servers:telegram.credentialsHelp")}{" "}
+                    <a
+                      className="underline inline-flex items-center gap-1"
+                      href="https://my.telegram.org/apps"
+                      target="_blank"
+                      rel="noreferrer noopener"
+                    >
+                      my.telegram.org/apps
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                    {defaults?.has_server_credentials ? (
+                      <>
+                        {" "}
+                        <button
+                          type="button"
+                          className="underline"
+                          onClick={() => setOverrideCredentials(false)}
+                        >
+                          {t("mcp-servers:telegram.backToServerCredentials")}
+                        </button>
+                      </>
+                    ) : (
+                      <> {t("mcp-servers:telegram.envHint")}</>
+                    )}
+                  </p>
+                </div>
+              </>
+            )}
 
             <div className="space-y-2">
               <Label>{t("mcp-servers:ownership")}</Label>

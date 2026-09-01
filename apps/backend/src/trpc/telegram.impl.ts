@@ -5,12 +5,14 @@ import {
   StartTelegramLoginRequestSchema,
   SubmitTelegramPasswordRequestSchema,
   TELEGRAM_MCP_DEFAULT_COMMAND,
+  TelegramConnectorDefaultsResponseSchema,
   TelegramLoginStateResponseSchema,
 } from "@repo/zod-types";
 import { z } from "zod";
 
 import logger from "@/utils/logger";
 
+import { resolveEnvApiCredentials } from "../lib/telegram/config";
 import {
   TelegramLoginError,
   telegramQrLoginManager,
@@ -18,6 +20,7 @@ import {
 import { mcpServersImplementations } from "./mcp-servers.impl";
 
 type LoginStateResponse = z.infer<typeof TelegramLoginStateResponseSchema>;
+type DefaultsResponse = z.infer<typeof TelegramConnectorDefaultsResponseSchema>;
 
 /**
  * Never let a Telegram/MTProto stack trace out to the browser: those messages
@@ -33,16 +36,44 @@ function toFailure(error: unknown, fallback: string): { message: string } {
 }
 
 export const telegramImplementations = {
+  /**
+   * What the dialog needs before it renders: whether this deployment already
+   * carries a Telegram application, so the user is asked only for the QR scan.
+   */
+  getDefaults: async (): Promise<DefaultsResponse> => {
+    const resolution = resolveEnvApiCredentials();
+    if (resolution.status === "ok") {
+      return {
+        success: true as const,
+        data: {
+          has_server_credentials: true,
+          // The hash stays here; the id identifies the app and is not a secret.
+          api_id: resolution.credentials.apiId,
+        },
+      };
+    }
+    return {
+      success: true as const,
+      data: {
+        has_server_credentials: false,
+        problem:
+          resolution.status === "invalid" ? resolution.reason : undefined,
+      },
+    };
+  },
+
   startLogin: async (
     input: z.infer<typeof StartTelegramLoginRequestSchema>,
     userId: string,
   ): Promise<LoginStateResponse> => {
     try {
-      const state = await telegramQrLoginManager.start(
-        userId,
-        input.api_id,
-        input.api_hash,
-      );
+      // Credentials omitted → the manager falls back to TELEGRAM_API_ID /
+      // TELEGRAM_API_HASH on this backend.
+      const override =
+        input.api_id !== undefined && input.api_hash !== undefined
+          ? { apiId: input.api_id, apiHash: input.api_hash }
+          : undefined;
+      const state = await telegramQrLoginManager.start(userId, override);
       return { success: true as const, data: state };
     } catch (error) {
       return {

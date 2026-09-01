@@ -3,6 +3,7 @@ import {
   CreateTelegramMcpServerRequestSchema,
   StartTelegramLoginRequestSchema,
   SubmitTelegramPasswordRequestSchema,
+  TelegramConnectorDefaultsResponseSchema,
   TelegramLoginIdSchema,
   TelegramLoginStateResponseSchema,
 } from "@repo/zod-types";
@@ -19,6 +20,9 @@ import { protectedProcedure, router } from "../../trpc";
  * so it must not be cached or replayed by the query client.
  */
 export const createTelegramRouter = (implementations: {
+  getDefaults: () => Promise<
+    z.infer<typeof TelegramConnectorDefaultsResponseSchema>
+  >;
   startLogin: (
     input: z.infer<typeof StartTelegramLoginRequestSchema>,
     userId: string,
@@ -41,6 +45,13 @@ export const createTelegramRouter = (implementations: {
   ) => Promise<z.infer<typeof CreateMcpServerResponseSchema>>;
 }) => {
   return router({
+    // Protected: Whether the deployment supplies the Telegram API credentials
+    getDefaults: protectedProcedure
+      .output(TelegramConnectorDefaultsResponseSchema)
+      .query(async () => {
+        return await implementations.getDefaults();
+      }),
+
     // Protected: Open a QR login against Telegram
     startLogin: protectedProcedure
       .input(StartTelegramLoginRequestSchema)
