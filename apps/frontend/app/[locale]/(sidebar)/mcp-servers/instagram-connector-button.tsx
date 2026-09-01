@@ -230,6 +230,19 @@ export function InstagramConnectorButton() {
     }
   };
 
+  /**
+   * True when the code would have to be delivered to the user — by text or by
+   * email — rather than read out of an authenticator app.
+   *
+   * Instagram only sends one after the delivery method is chosen through its
+   * own two-step flow, which this connector has no way to drive, so for these
+   * accounts no message is coming and the cookie path is the way through. A
+   * code from an app needs no sending, so that case is left alone.
+   */
+  const codeMustBeSent =
+    loginState?.two_factor_method === "SMS" ||
+    loginState?.two_factor_method === "EMAIL";
+
   /** Channels the account also has, in case the expected one stays silent. */
   const otherPlaces = (() => {
     const methods = loginState?.two_factor_methods;
@@ -413,6 +426,12 @@ export function InstagramConnectorButton() {
               <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
               {codeSourceText()}
             </p>
+
+            {codeMustBeSent && (
+              <p className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400">
+                {t("mcp-servers:instagram.codeNotSent")}
+              </p>
+            )}
 
             {loginState?.sms_unavailable_reason && (
               <p className="text-xs text-amber-600 dark:text-amber-400">

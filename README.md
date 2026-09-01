@@ -627,12 +627,20 @@ Application → Cookies → copy three values by hand into a server config.
    already filled in. The command defaults to `mcp-instagram-dm` (the package baked into the
    all-in-one image) and can be changed under **Advanced settings**.
 
+**Two-factor accounts.** A code from an authenticator app works, because it does not have to
+be sent anywhere — you read it and type it in. A code by **text or email does not**: Instagram
+only sends one after the delivery method is picked through its own two-step flow (entrypoint →
+method picker → select method → verify), and the login endpoint this connector talks to has no
+step that asks for a code to be sent. So for those accounts nothing ever arrives, and the
+dialog says so rather than showing an input that will stay empty.
+
 **When Instagram refuses.** A sign-in from a server's IP is an unfamiliar login, so Instagram
 may answer with a checkpoint ("we noticed an unusual login") or with a rate limit instead of a
 session. The dialog reports which of the two happened and offers the other path: **paste
 cookies from your browser** builds the same connector from the three values of a session you
 are already signed in to. That path always works, because the login already happened where
-Instagram expects it.
+Instagram expects it — and it is the way through for any account whose code has to be
+delivered.
 
 **Security notes.** The password is used for exactly one request and is never stored — MetaMCP
 keeps only the cookies Instagram hands back, and those go into the server's environment
