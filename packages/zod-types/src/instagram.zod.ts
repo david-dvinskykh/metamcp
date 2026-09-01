@@ -18,7 +18,14 @@ export const InstagramLoginPhaseEnum = z.enum([
 
 export type InstagramLoginPhase = z.infer<typeof InstagramLoginPhaseEnum>;
 
-export const InstagramTwoFactorMethodEnum = z.enum(["TOTP", "SMS"]);
+export const InstagramTwoFactorMethodEnum = z.enum(["TOTP", "SMS", "EMAIL"]);
+
+/** Every channel the account has enabled, as Instagram reported them. */
+export const InstagramTwoFactorMethodsSchema = z.object({
+  totp: z.boolean(),
+  sms: z.boolean(),
+  email: z.boolean(),
+});
 
 export const StartInstagramLoginRequestSchema = z.object({
   username: z.string().min(1, "Username is required"),
@@ -41,10 +48,14 @@ export const InstagramLoginStateSchema = z.object({
   login_id: z.string(),
   phase: InstagramLoginPhaseEnum,
   username: z.string(),
-  /** How the code reaches the user, when phase is AWAITING_CODE. */
+  /** The channel the code actually comes through, when phase is AWAITING_CODE. */
   two_factor_method: InstagramTwoFactorMethodEnum.optional(),
-  /** Masked phone number Instagram texted, for the SMS method. */
+  /** Every channel the account has, so the UI can say where to look. */
+  two_factor_methods: InstagramTwoFactorMethodsSchema.optional(),
+  /** Masked phone number, when an SMS is in play. */
   phone_hint: z.string().optional(),
+  /** Why Instagram will not text a code — the reason none ever arrives. */
+  sms_unavailable_reason: z.string().optional(),
 });
 
 export const InstagramLoginStateResponseSchema = z.object({
@@ -114,4 +125,7 @@ export type CreateInstagramMcpServerFromCookiesRequest = z.infer<
 export type InstagramLoginState = z.infer<typeof InstagramLoginStateSchema>;
 export type InstagramTwoFactorMethod = z.infer<
   typeof InstagramTwoFactorMethodEnum
+>;
+export type InstagramTwoFactorMethods = z.infer<
+  typeof InstagramTwoFactorMethodsSchema
 >;

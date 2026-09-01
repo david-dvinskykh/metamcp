@@ -43,7 +43,7 @@ describe("interpretLoginResponse", () => {
     });
   });
 
-  it("reads the two-factor challenge, defaulting to SMS", () => {
+  it("reads an SMS challenge with the number Instagram texted", () => {
     expect(
       interpretLoginResponse(400, {
         two_factor_required: true,
@@ -60,24 +60,87 @@ describe("interpretLoginResponse", () => {
       kind: "TWO_FACTOR_REQUIRED",
       identifier: "abc123",
       username: "someone",
-      method: "SMS",
+      methods: { totp: false, sms: true, email: false },
+      preferred: "SMS",
       phoneHint: "55",
+      smsUnavailableReason: undefined,
     });
   });
 
-  it("marks an authenticator-app challenge as TOTP", () => {
-    const outcome = interpretLoginResponse(400, {
-      two_factor_required: true,
-      two_factor_info: {
-        username: "someone",
-        two_factor_identifier: "abc123",
-        totp_two_factor_on: true,
-      },
-      status: "fail",
+  it("prefers the authenticator app, where no message is sent at all", () => {
+    // The account below has both channels. Instagram acts on the app and texts
+    // nothing, so reporting SMS would leave the user waiting on a silent phone.
+    expect(
+      interpretLoginResponse(400, {
+        two_factor_required: true,
+        two_factor_info: {
+          username: "someone",
+          two_factor_identifier: "abc123",
+          totp_two_factor_on: true,
+          sms_two_factor_on: true,
+          obfuscated_phone_number: "55",
+        },
+        status: "fail",
+      }),
+    ).toMatchObject({
+      preferred: "TOTP",
+      methods: { totp: true, sms: true, email: false },
     });
-    expect(outcome).toMatchObject({
-      kind: "TWO_FACTOR_REQUIRED",
-      method: "TOTP",
+  });
+
+  it("carries Instagram's reason for not texting a code", () => {
+    // With a reason set, no SMS is coming however enabled the channel looks.
+    expect(
+      interpretLoginResponse(400, {
+        two_factor_required: true,
+        two_factor_info: {
+          username: "someone",
+          two_factor_identifier: "abc123",
+          sms_two_factor_on: true,
+          email_two_factor_on: true,
+          sms_not_allowed_reason: "SMS is unavailable in your region",
+        },
+        status: "fail",
+      }),
+    ).toMatchObject({
+      preferred: "EMAIL",
+      smsUnavailableReason: "SMS is unavailable in your region",
+      methods: { totp: false, sms: true, email: true },
+    });
+  });
+
+  it("treats an emailed code as its own channel", () => {
+    expect(
+      interpretLoginResponse(400, {
+        two_factor_required: true,
+        two_factor_info: {
+          username: "someone",
+          two_factor_identifier: "abc123",
+          email_two_factor_on: true,
+        },
+        status: "fail",
+      }),
+    ).toMatchObject({
+      preferred: "EMAIL",
+      methods: { totp: false, sms: false, email: true },
+    });
+  });
+
+  it("infers SMS from a phone hint on a response with no flags", () => {
+    expect(
+      interpretLoginResponse(400, {
+        two_factor_required: true,
+        two_factor_info: {
+          username: "someone",
+          two_factor_identifier: "abc123",
+          obfuscated_phone_number: "88",
+        },
+        status: "fail",
+      }),
+    ).toMatchObject({
+      preferred: "SMS",
+      methods: { totp: false, sms: true, email: false },
+      phoneHint: "88",
     });
   });
 

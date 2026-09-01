@@ -210,6 +210,44 @@ export function InstagramConnectorButton() {
     }
   };
 
+  /**
+   * Say where the code actually comes from. Instagram acts on one channel and
+   * sends nothing at all when the account uses an authenticator app, so
+   * "we texted you" is the wrong thing to show for most accounts.
+   */
+  const codeSourceText = () => {
+    switch (loginState?.two_factor_method) {
+      case "TOTP":
+        return t("mcp-servers:instagram.codeFromApp");
+      case "EMAIL":
+        return t("mcp-servers:instagram.codeFromEmail");
+      default:
+        return loginState?.phone_hint
+          ? t("mcp-servers:instagram.codeFromSmsWithHint", {
+              hint: loginState.phone_hint,
+            })
+          : t("mcp-servers:instagram.codeFromSms");
+    }
+  };
+
+  /** Channels the account also has, in case the expected one stays silent. */
+  const otherPlaces = (() => {
+    const methods = loginState?.two_factor_methods;
+    const preferred = loginState?.two_factor_method;
+    if (!methods) return [];
+    const places: string[] = [];
+    if (methods.totp && preferred !== "TOTP") {
+      places.push(t("mcp-servers:instagram.placeApp"));
+    }
+    if (methods.sms && preferred !== "SMS") {
+      places.push(t("mcp-servers:instagram.placeSms"));
+    }
+    if (methods.email && preferred !== "EMAIL") {
+      places.push(t("mcp-servers:instagram.placeEmail"));
+    }
+    return places;
+  })();
+
   const settingsFields = (
     <>
       <div className="space-y-2">
@@ -373,14 +411,24 @@ export function InstagramConnectorButton() {
           <div className="space-y-4">
             <p className="flex items-start gap-2 text-sm text-muted-foreground">
               <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
-              {loginState?.two_factor_method === "TOTP"
-                ? t("mcp-servers:instagram.codeFromApp")
-                : loginState?.phone_hint
-                  ? t("mcp-servers:instagram.codeFromSmsWithHint", {
-                      hint: loginState.phone_hint,
-                    })
-                  : t("mcp-servers:instagram.codeFromSms")}
+              {codeSourceText()}
             </p>
+
+            {loginState?.sms_unavailable_reason && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                {t("mcp-servers:instagram.smsUnavailable", {
+                  reason: loginState.sms_unavailable_reason,
+                })}
+              </p>
+            )}
+
+            {otherPlaces.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {t("mcp-servers:instagram.otherPlaces", {
+                  places: otherPlaces.join(", "),
+                })}
+              </p>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="instagram-code">
@@ -402,6 +450,25 @@ export function InstagramConnectorButton() {
                 autoFocus
               />
             </div>
+
+            <p className="text-xs text-muted-foreground">
+              {t("mcp-servers:instagram.noCodeHelp")}
+            </p>
+
+            <button
+              type="button"
+              className="text-xs text-muted-foreground underline"
+              onClick={() => {
+                setError(null);
+                const loginId = loginState?.login_id;
+                if (loginId) cancelLogin.mutate({ login_id: loginId });
+                setLoginState(null);
+                setCode("");
+                setStep("cookies");
+              }}
+            >
+              {t("mcp-servers:instagram.useCookiesInstead")}
+            </button>
 
             <div className="flex justify-end space-x-2">
               <Button

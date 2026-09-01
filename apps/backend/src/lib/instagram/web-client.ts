@@ -43,7 +43,17 @@ export interface InstagramCookies {
   dsUserId: string;
 }
 
-export type TwoFactorMethod = "TOTP" | "SMS";
+export type TwoFactorMethod = "TOTP" | "SMS" | "EMAIL";
+
+/**
+ * Where Instagram will accept a code from for this account. More than one can
+ * be true; `preferred` is the one it actually acts on.
+ */
+export interface TwoFactorMethods {
+  totp: boolean;
+  sms: boolean;
+  email: boolean;
+}
 
 export type InstagramLoginOutcome =
   | { kind: "AUTHENTICATED"; cookies: InstagramCookies; username: string }
@@ -51,9 +61,17 @@ export type InstagramLoginOutcome =
       kind: "TWO_FACTOR_REQUIRED";
       identifier: string;
       username: string;
-      method: TwoFactorMethod;
-      /** Masked phone number Instagram texted, when the method is SMS. */
+      /** Every channel the account has enabled. */
+      methods: TwoFactorMethods;
+      /** The channel the code will actually come through. */
+      preferred: TwoFactorMethod;
+      /** Masked phone number, when Instagram sent (or would send) an SMS. */
       phoneHint?: string;
+      /**
+       * Why Instagram refused to text a code. Set on the response even when
+       * `sms` is enabled, and the reason no message ever arrives.
+       */
+      smsUnavailableReason?: string;
     }
   /** Credentials rejected: wrong password, or no such account. */
   | { kind: "REJECTED"; message: string }
@@ -98,12 +116,36 @@ export function interpretLoginResponse(
         message: "Instagram asked for a two-factor code but sent no identifier",
       };
     }
+    const smsUnavailableReason = asString(info.sms_not_allowed_reason);
+    const methods: TwoFactorMethods = {
+      totp: info.totp_two_factor_on === true,
+      // Instagram omits the flag on older responses that carry a phone hint;
+      // an unavailable reason means the channel exists but will not deliver.
+      sms:
+        info.sms_two_factor_on === true ||
+        (info.sms_two_factor_on === undefined &&
+          asString(info.obfuscated_phone_number) !== undefined),
+      email: info.email_two_factor_on === true,
+    };
+
+    // Instagram acts on one channel: the authenticator app when the account has
+    // one (no message is sent at all in that case), then SMS, then email.
+    const preferred: TwoFactorMethod = methods.totp
+      ? "TOTP"
+      : methods.sms && !smsUnavailableReason
+        ? "SMS"
+        : methods.email
+          ? "EMAIL"
+          : "SMS";
+
     return {
       kind: "TWO_FACTOR_REQUIRED",
       identifier,
       username,
-      method: info.totp_two_factor_on === true ? "TOTP" : "SMS",
+      methods,
+      preferred,
       phoneHint: asString(info.obfuscated_phone_number),
+      smsUnavailableReason,
     };
   }
 
@@ -289,6 +331,7 @@ export class InstagramWebLoginSession {
       identifier,
       queryParams: "{}",
       // 1 = code texted to the phone, 3 = code from an authenticator app.
+      // An emailed code is submitted the same way a texted one is.
       verification_method: method === "TOTP" ? "3" : "1",
       trust_signal: "true",
     });

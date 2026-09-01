@@ -8,6 +8,7 @@ import {
   InstagramCookies,
   InstagramWebLoginSession,
   TwoFactorMethod,
+  TwoFactorMethods,
 } from "./web-client";
 
 /**
@@ -44,7 +45,9 @@ interface LoginSession {
   phase: InstagramLoginPhase;
   twoFactorIdentifier?: string;
   twoFactorMethod?: TwoFactorMethod;
+  twoFactorMethods?: TwoFactorMethods;
   phoneHint?: string;
+  smsUnavailableReason?: string;
   cookies?: InstagramCookies;
   createdAt: number;
   touchedAt: number;
@@ -175,8 +178,10 @@ class InstagramLoginManager {
       case "TWO_FACTOR_REQUIRED":
         session.phase = "AWAITING_CODE";
         session.twoFactorIdentifier = outcome.identifier;
-        session.twoFactorMethod = outcome.method;
+        session.twoFactorMethod = outcome.preferred;
+        session.twoFactorMethods = outcome.methods;
         session.phoneHint = outcome.phoneHint;
+        session.smsUnavailableReason = outcome.smsUnavailableReason;
         // Instagram echoes the canonical username; use it from here on.
         session.username = outcome.username;
         return;
@@ -206,8 +211,16 @@ class InstagramLoginManager {
       username: session.username,
       two_factor_method:
         session.phase === "AWAITING_CODE" ? session.twoFactorMethod : undefined,
+      two_factor_methods:
+        session.phase === "AWAITING_CODE"
+          ? session.twoFactorMethods
+          : undefined,
       phone_hint:
         session.phase === "AWAITING_CODE" ? session.phoneHint : undefined,
+      sms_unavailable_reason:
+        session.phase === "AWAITING_CODE"
+          ? session.smsUnavailableReason
+          : undefined,
     };
   }
 
