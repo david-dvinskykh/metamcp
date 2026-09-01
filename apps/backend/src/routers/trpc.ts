@@ -8,6 +8,7 @@ import { createContext } from "../trpc";
 import { apiKeysImplementations } from "../trpc/api-keys.impl";
 import { configImplementations } from "../trpc/config.impl";
 import { endpointsImplementations } from "../trpc/endpoints.impl";
+import { instagramImplementations } from "../trpc/instagram.impl";
 import { logsImplementations } from "../trpc/logs.impl";
 import { mcpRequestAuditLogsImplementations } from "../trpc/mcp-request-audit-logs.impl";
 import { mcpServersImplementations } from "../trpc/mcp-servers.impl";
@@ -29,6 +30,7 @@ const appRouter = createAppRouter({
     logs: logsImplementations,
     mcpRequestAuditLogs: mcpRequestAuditLogsImplementations,
     telegram: telegramImplementations,
+    instagram: instagramImplementations,
   },
 });
 

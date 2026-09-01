@@ -42,6 +42,7 @@ import { trpc } from "@/lib/trpc";
 import { createTranslatedZodResolver } from "@/lib/zod-resolver";
 
 import { ExportImportButtons } from "./export-import-buttons";
+import { InstagramConnectorButton } from "./instagram-connector-button";
 import { McpServersList } from "./mcp-servers-list";
 import { TelegramConnectorButton } from "./telegram-connector-button";
 
@@ -212,6 +213,7 @@ export default function McpServersPage() {
         <div className="flex items-center gap-2">
           <ExportImportButtons />
           <TelegramConnectorButton />
+          <InstagramConnectorButton />
           <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
             <DialogTrigger asChild>
               <Button>

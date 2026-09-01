@@ -59,6 +59,7 @@ English | [简体中文](./README_cn.md)
 - [🧾 Log Levels](#-log-levels)
 - [📎 Direct File Transfers (Telegram → Google Drive, without burning tokens)](#-direct-file-transfers-telegram--google-drive-without-burning-tokens)
 - [💬 One-Click Telegram Connector](#-one-click-telegram-connector)
+- [📸 One-Click Instagram Connector](#-one-click-instagram-connector)
 - [🔐 Authentication](#-authentication)
 - [🚦 Traffic Management](#-traffic-management)
   - [🚧 **MCP Rate Limit**](#-mcp-rate-limit)
@@ -604,6 +605,41 @@ session string can be spent on exactly one MCP server. Closing the dialog cancel
 disconnects it — MetaMCP never calls `auth.logOut`, so the credential handed to the MCP server
 stays valid. The session string is an account credential with the same power as the account
 itself; it is stored in the server's environment variables like any other MCP secret.
+
+## 📸 One-Click Instagram Connector
+
+The Instagram MCP server authenticates with the three cookies a logged-in browser holds
+(`sessionid`, `csrftoken`, `ds_user_id`), which normally means a trip through devtools:
+Application → Cookies → copy three values by hand into a server config.
+
+**MCP Servers → Connect Instagram** does the sign-in instead:
+
+1. Enter the connector's name and the account's username and password.
+2. MetaMCP signs in to instagram.com from the backend. If the account has two-factor
+   authentication on, it asks for the code (from the authenticator app, or the SMS Instagram
+   just sent — the dialog says which).
+3. Confirm the account, and the STDIO MCP server is created with
+
+   ```
+   INSTAGRAM_SESSION_ID, INSTAGRAM_CSRF_TOKEN, INSTAGRAM_DS_USER_ID
+   ```
+
+   already filled in. The command defaults to `mcp-instagram-dm` (the package baked into the
+   all-in-one image) and can be changed under **Advanced settings**.
+
+**When Instagram refuses.** A sign-in from a server's IP is an unfamiliar login, so Instagram
+may answer with a checkpoint ("we noticed an unusual login") or with a rate limit instead of a
+session. The dialog reports which of the two happened and offers the other path: **paste
+cookies from your browser** builds the same connector from the three values of a session you
+are already signed in to. That path always works, because the login already happened where
+Instagram expects it.
+
+**Security notes.** The password is used for exactly one request and is never stored — MetaMCP
+keeps only the cookies Instagram hands back, and those go into the server's environment
+variables without passing through the browser. A login is bound to the MetaMCP user who
+started it, is dropped after 10 minutes of inactivity, and can be spent on exactly one MCP
+server. The `sessionid` cookie is an account credential with the same power as the account
+itself; treat it like any other MCP secret.
 
 ## 🔐 Authentication
 
