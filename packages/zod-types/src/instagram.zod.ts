@@ -18,18 +18,27 @@ export const InstagramLoginPhaseEnum = z.enum([
 
 export type InstagramLoginPhase = z.infer<typeof InstagramLoginPhaseEnum>;
 
-export const InstagramTwoFactorMethodEnum = z.enum(["TOTP", "SMS", "EMAIL"]);
-
-/** Every channel the account has enabled, as Instagram reported them. */
-export const InstagramTwoFactorMethodsSchema = z.object({
-  totp: z.boolean(),
-  sms: z.boolean(),
-  email: z.boolean(),
-});
+/**
+ * Channels Instagram can deliver a two-factor code on. `TOTP` and
+ * `BACKUP_CODE` need no delivery — the code is already on the user's device.
+ */
+export const InstagramTwoFactorChannelEnum = z.enum([
+  "SMS",
+  "WHATSAPP",
+  "EMAIL",
+  "TOTP",
+  "BACKUP_CODE",
+]);
 
 export const StartInstagramLoginRequestSchema = z.object({
   username: z.string().min(1, "Username is required"),
   password: z.string().min(1, "Password is required"),
+});
+
+/** Ask Instagram to deliver a code on one of the account's channels. */
+export const SendInstagramCodeRequestSchema = z.object({
+  login_id: z.string().min(1),
+  channel: InstagramTwoFactorChannelEnum,
 });
 
 export const SubmitInstagramCodeRequestSchema = z.object({
@@ -48,14 +57,18 @@ export const InstagramLoginStateSchema = z.object({
   login_id: z.string(),
   phase: InstagramLoginPhaseEnum,
   username: z.string(),
-  /** The channel the code actually comes through, when phase is AWAITING_CODE. */
-  two_factor_method: InstagramTwoFactorMethodEnum.optional(),
-  /** Every channel the account has, so the UI can say where to look. */
-  two_factor_methods: InstagramTwoFactorMethodsSchema.optional(),
-  /** Masked phone number, when an SMS is in play. */
-  phone_hint: z.string().optional(),
-  /** Why Instagram will not text a code — the reason none ever arrives. */
+  /** Channels this account can take a code on, when phase is AWAITING_CODE. */
+  channels: z.array(InstagramTwoFactorChannelEnum).optional(),
+  /** The channel a code was last requested on. */
+  selected_channel: InstagramTwoFactorChannelEnum.optional(),
+  /** True once Instagram confirmed it sent a code on the chosen channel. */
+  code_sent: z.boolean().optional(),
+  /** Masked destination Instagram reported, e.g. a partial phone number. */
+  masked_contact_point: z.string().optional(),
+  /** Why Instagram will not text a code — the reason none would arrive. */
   sms_unavailable_reason: z.string().optional(),
+  /** How long Instagram asks callers to wait before another text. */
+  sms_resend_delay_seconds: z.number().optional(),
 });
 
 export const InstagramLoginStateResponseSchema = z.object({
@@ -123,9 +136,9 @@ export type CreateInstagramMcpServerFromCookiesRequest = z.infer<
   typeof CreateInstagramMcpServerFromCookiesRequestSchema
 >;
 export type InstagramLoginState = z.infer<typeof InstagramLoginStateSchema>;
-export type InstagramTwoFactorMethod = z.infer<
-  typeof InstagramTwoFactorMethodEnum
+export type InstagramTwoFactorChannel = z.infer<
+  typeof InstagramTwoFactorChannelEnum
 >;
-export type InstagramTwoFactorMethods = z.infer<
-  typeof InstagramTwoFactorMethodsSchema
+export type SendInstagramCodeRequest = z.infer<
+  typeof SendInstagramCodeRequestSchema
 >;

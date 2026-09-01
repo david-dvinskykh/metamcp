@@ -5,6 +5,7 @@ import {
   INSTAGRAM_MCP_DEFAULT_COMMAND,
   InstagramLoginStateResponseSchema,
   McpServerTypeEnum,
+  SendInstagramCodeRequestSchema,
   StartInstagramLoginRequestSchema,
   SubmitInstagramCodeRequestSchema,
 } from "@repo/zod-types";
@@ -84,6 +85,29 @@ export const instagramImplementations = {
       return {
         success: false as const,
         ...toFailure(error, "Could not sign in to Instagram"),
+      };
+    }
+  },
+
+  /**
+   * Ask Instagram to deliver a code. Its current flow sends nothing until a
+   * channel is picked, which is why this is a step of its own.
+   */
+  sendCode: async (
+    input: z.infer<typeof SendInstagramCodeRequestSchema>,
+    userId: string,
+  ): Promise<LoginStateResponse> => {
+    try {
+      const state = await instagramLoginManager.sendCode(
+        userId,
+        input.login_id,
+        input.channel,
+      );
+      return { success: true as const, data: state };
+    } catch (error) {
+      return {
+        success: false as const,
+        ...toFailure(error, "Could not ask Instagram to send a code"),
       };
     }
   },

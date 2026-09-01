@@ -4,6 +4,7 @@ import {
   INSTAGRAM_MCP_DEFAULT_COMMAND,
   INSTAGRAM_MCP_DEFAULT_SERVER_NAME,
   InstagramLoginState,
+  InstagramTwoFactorChannel,
 } from "@repo/zod-types";
 import {
   ChevronDown,
@@ -69,6 +70,7 @@ export function InstagramConnectorButton() {
   const [dsUserId, setDsUserId] = useState("");
 
   const startLogin = trpc.frontend.instagram.startLogin.useMutation();
+  const sendCode = trpc.frontend.instagram.sendCode.useMutation();
   const submitCode = trpc.frontend.instagram.submitCode.useMutation();
   const cancelLogin = trpc.frontend.instagram.cancelLogin.useMutation();
   const createServer = trpc.frontend.instagram.createServer.useMutation();
@@ -211,55 +213,57 @@ export function InstagramConnectorButton() {
   };
 
   /**
-   * Say where the code actually comes from. Instagram acts on one channel and
-   * sends nothing at all when the account uses an authenticator app, so
-   * "we texted you" is the wrong thing to show for most accounts.
+   * Ask Instagram to deliver a code. Its flow sends nothing until a channel is
+   * picked — the step the old endpoint had no way to perform, and the reason
+   * texted codes never used to arrive.
    */
-  const codeSourceText = () => {
-    switch (loginState?.two_factor_method) {
-      case "TOTP":
-        return t("mcp-servers:instagram.codeFromApp");
-      case "EMAIL":
-        return t("mcp-servers:instagram.codeFromEmail");
-      default:
-        return loginState?.phone_hint
-          ? t("mcp-servers:instagram.codeFromSmsWithHint", {
-              hint: loginState.phone_hint,
-            })
-          : t("mcp-servers:instagram.codeFromSms");
+  const handleSendCode = async (channel: InstagramTwoFactorChannel) => {
+    const loginId = loginState?.login_id;
+    if (!loginId) return;
+    setError(null);
+    try {
+      const response = await sendCode.mutateAsync({
+        login_id: loginId,
+        channel,
+      });
+      if (response.success && response.data) {
+        setLoginState(response.data);
+      } else {
+        setError(response.message ?? t("mcp-servers:instagram.loginFailed"));
+      }
+    } catch (sendError) {
+      setError(messageOf(sendError, t("mcp-servers:instagram.loginFailed")));
     }
   };
 
-  /**
-   * True when the code would have to be delivered to the user — by text or by
-   * email — rather than read out of an authenticator app.
-   *
-   * Instagram only sends one after the delivery method is chosen through its
-   * own two-step flow, which this connector has no way to drive, so for these
-   * accounts no message is coming and the cookie path is the way through. A
-   * code from an app needs no sending, so that case is left alone.
-   */
-  const codeMustBeSent =
-    loginState?.two_factor_method === "SMS" ||
-    loginState?.two_factor_method === "EMAIL";
+  /** Button wording per channel, so the user knows where to look. */
+  const channelLabel = (channel: InstagramTwoFactorChannel) => {
+    switch (channel) {
+      case "SMS":
+        return loginState?.masked_contact_point
+          ? t("mcp-servers:instagram.channelSmsWithHint", {
+              hint: loginState.masked_contact_point,
+            })
+          : t("mcp-servers:instagram.channelSms");
+      case "WHATSAPP":
+        return t("mcp-servers:instagram.channelWhatsapp");
+      case "EMAIL":
+        return t("mcp-servers:instagram.channelEmail");
+      case "BACKUP_CODE":
+        return t("mcp-servers:instagram.channelBackup");
+      default:
+        return t("mcp-servers:instagram.channelApp");
+    }
+  };
 
-  /** Channels the account also has, in case the expected one stays silent. */
-  const otherPlaces = (() => {
-    const methods = loginState?.two_factor_methods;
-    const preferred = loginState?.two_factor_method;
-    if (!methods) return [];
-    const places: string[] = [];
-    if (methods.totp && preferred !== "TOTP") {
-      places.push(t("mcp-servers:instagram.placeApp"));
-    }
-    if (methods.sms && preferred !== "SMS") {
-      places.push(t("mcp-servers:instagram.placeSms"));
-    }
-    if (methods.email && preferred !== "EMAIL") {
-      places.push(t("mcp-servers:instagram.placeEmail"));
-    }
-    return places;
-  })();
+  const channels = loginState?.channels ?? [];
+  const selected = loginState?.selected_channel;
+  /** A code is in hand only once it was sent, or comes from the user's device. */
+  const codeReady =
+    selected !== undefined &&
+    (loginState?.code_sent === true ||
+      selected === "TOTP" ||
+      selected === "BACKUP_CODE");
 
   const settingsFields = (
     <>
@@ -424,14 +428,8 @@ export function InstagramConnectorButton() {
           <div className="space-y-4">
             <p className="flex items-start gap-2 text-sm text-muted-foreground">
               <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
-              {codeSourceText()}
+              {t("mcp-servers:instagram.pickChannel")}
             </p>
-
-            {codeMustBeSent && (
-              <p className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400">
-                {t("mcp-servers:instagram.codeNotSent")}
-              </p>
-            )}
 
             {loginState?.sms_unavailable_reason && (
               <p className="text-xs text-amber-600 dark:text-amber-400">
@@ -441,11 +439,34 @@ export function InstagramConnectorButton() {
               </p>
             )}
 
-            {otherPlaces.length > 0 && (
+            <div className="flex flex-col gap-2">
+              {channels.map((channel) => (
+                <Button
+                  key={channel}
+                  type="button"
+                  variant={selected === channel ? "default" : "outline"}
+                  className="justify-start"
+                  onClick={() => handleSendCode(channel)}
+                  disabled={sendCode.isPending}
+                >
+                  {sendCode.isPending &&
+                    sendCode.variables?.channel === channel && (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    )}
+                  {channelLabel(channel)}
+                </Button>
+              ))}
+            </div>
+
+            {loginState?.code_sent && (
               <p className="text-xs text-muted-foreground">
-                {t("mcp-servers:instagram.otherPlaces", {
-                  places: otherPlaces.join(", "),
-                })}
+                {t("mcp-servers:instagram.codeSent")}
+                {loginState.sms_resend_delay_seconds
+                  ? " " +
+                    t("mcp-servers:instagram.resendAfter", {
+                      seconds: loginState.sms_resend_delay_seconds,
+                    })
+                  : ""}
               </p>
             )}
 
@@ -466,13 +487,14 @@ export function InstagramConnectorButton() {
                 placeholder="123456"
                 inputMode="numeric"
                 autoComplete="one-time-code"
-                autoFocus
+                disabled={!codeReady}
               />
+              {!codeReady && (
+                <p className="text-xs text-muted-foreground">
+                  {t("mcp-servers:instagram.chooseFirst")}
+                </p>
+              )}
             </div>
-
-            <p className="text-xs text-muted-foreground">
-              {t("mcp-servers:instagram.noCodeHelp")}
-            </p>
 
             <button
               type="button"
@@ -500,7 +522,7 @@ export function InstagramConnectorButton() {
               <Button
                 type="button"
                 onClick={handleCode}
-                disabled={!code || submitCode.isPending}
+                disabled={!code || !codeReady || submitCode.isPending}
               >
                 {submitCode.isPending && (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />

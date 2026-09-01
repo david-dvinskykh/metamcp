@@ -627,12 +627,20 @@ Application → Cookies → copy three values by hand into a server config.
    already filled in. The command defaults to `mcp-instagram-dm` (the package baked into the
    all-in-one image) and can be changed under **Advanced settings**.
 
-**Two-factor accounts.** A code from an authenticator app works, because it does not have to
-be sent anywhere — you read it and type it in. A code by **text or email does not**: Instagram
-only sends one after the delivery method is picked through its own two-step flow (entrypoint →
-method picker → select method → verify), and the login endpoint this connector talks to has no
-step that asks for a code to be sent. So for those accounts nothing ever arrives, and the
-dialog says so rather than showing an input that will stay empty.
+**Two-factor accounts.** Instagram sends nothing until a delivery channel is chosen, which is
+why a connector that only submits codes leaves you waiting on a silent phone. The dialog asks
+first: it lists the channels the account actually has — text, WhatsApp, email, authenticator
+app, backup code — and the one you pick is what MetaMCP asks Instagram to send on. The code box
+stays disabled until a code is genuinely in hand.
+
+The sign-in drives the same three GraphQL mutations instagram.com does — `useCDSWebLoginMutation`,
+`useTwoStepVerificationSendCodeMutation`, `useTwoFactorLoginValidateCodeMutation` — with the
+password sealed under Instagram's published key the way the browser seals it. Those mutations
+are addressed by persisted-query ids, which Instagram rotates when it ships a new web client;
+they live together in `PERSISTED_QUERIES` in `apps/backend/src/lib/instagram/graphql-login.ts`.
+When one goes stale the dialog says the sign-in can no longer run and points at the cookie
+option, rather than reporting it as a login failure. Refreshing them means recording a login in
+a browser and reading the new `doc_id` values off the three requests.
 
 **When Instagram refuses.** A sign-in from a server's IP is an unfamiliar login, so Instagram
 may answer with a checkpoint ("we noticed an unusual login") or with a rate limit instead of a

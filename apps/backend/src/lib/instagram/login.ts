@@ -6,18 +6,19 @@ import logger from "@/utils/logger";
 
 import {
   InstagramCookies,
-  InstagramWebLoginSession,
-  TwoFactorMethod,
-  TwoFactorMethods,
-} from "./web-client";
+  InstagramGraphqlLogin,
+  LoginOutcome,
+  TwoFactorChannel,
+  TwoFactorContext,
+} from "./graphql-login";
 
 /**
  * Backend half of the one-click Instagram connector.
  *
- * Runs instagram.com's own login (credentials, then the two-factor code when
- * the account has it on) and keeps the in-flight logins in memory. The browser
- * only ever learns the phase and, on success, the account name — the session
- * cookie goes straight into the MCP server's env.
+ * Drives instagram.com's own web login and keeps the in-flight attempts in
+ * memory. The browser learns the phase, the channels a code can be sent on, and
+ * — once finished — the account name; the session cookies go straight into the
+ * MCP server's env.
  */
 
 /** A login left untouched for this long is dropped. */
@@ -41,13 +42,13 @@ interface LoginSession {
   id: string;
   userId: string;
   username: string;
-  client: InstagramWebLoginSession;
+  client: InstagramGraphqlLogin;
   phase: InstagramLoginPhase;
-  twoFactorIdentifier?: string;
-  twoFactorMethod?: TwoFactorMethod;
-  twoFactorMethods?: TwoFactorMethods;
-  phoneHint?: string;
-  smsUnavailableReason?: string;
+  context?: TwoFactorContext;
+  /** Channel the pending code was requested on. */
+  selectedChannel?: TwoFactorChannel;
+  /** Whether a code has actually been sent on the selected channel. */
+  codeSent: boolean;
   cookies?: InstagramCookies;
   createdAt: number;
   touchedAt: number;
@@ -58,8 +59,8 @@ class InstagramLoginManager {
   private sweeper?: NodeJS.Timeout;
 
   /**
-   * Sign in with a username and password. Returns either a finished login or a
-   * request for the two-factor code.
+   * Sign in with a username and password. Returns either a finished login or
+   * the two-factor challenge, with the channels a code can be requested on.
    */
   async start(
     userId: string,
@@ -69,12 +70,12 @@ class InstagramLoginManager {
     this.evictExpired();
     this.enforcePerUserLimit(userId);
 
-    const client = new InstagramWebLoginSession();
+    const client = new InstagramGraphqlLogin();
     try {
       await client.prepare();
     } catch (error) {
       throw new InstagramLoginError(
-        `Could not reach Instagram: ${
+        `Could not start a login with Instagram: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -86,16 +87,57 @@ class InstagramLoginManager {
       username,
       client,
       phase: "AWAITING_CODE",
+      codeSent: false,
       createdAt: Date.now(),
       touchedAt: Date.now(),
     };
 
-    const outcome = await client.login(username, password);
-    this.applyOutcome(session, outcome);
-
+    this.applyOutcome(session, await client.login(username, password));
     this.sessions.set(session.id, session);
     this.ensureSweeper();
     return this.toState(session);
+  }
+
+  /**
+   * Ask Instagram to deliver a code on the chosen channel.
+   *
+   * This is the step the legacy login endpoint had no equivalent for, and the
+   * reason texted codes never used to arrive: nothing had asked for one.
+   */
+  async sendCode(
+    userId: string,
+    loginId: string,
+    channel: TwoFactorChannel,
+  ): Promise<InstagramLoginState> {
+    const session = this.require(userId, loginId);
+    const context = session.context;
+    if (session.phase === "AUTHENTICATED") return this.toState(session);
+    if (!context) {
+      throw new InstagramLoginError("This login is not waiting for a code");
+    }
+    if (!context.channels.includes(channel)) {
+      throw new InstagramLoginError(
+        "This account cannot take a code on that channel",
+      );
+    }
+
+    const outcome = await session.client.sendCode(context, channel);
+    switch (outcome.kind) {
+      case "SENT":
+        session.selectedChannel = channel;
+        // Nothing is delivered for an app code; it is already on the device.
+        session.codeSent = channel !== "TOTP" && channel !== "BACKUP_CODE";
+        return this.toState(session);
+
+      case "REFUSED":
+        throw new InstagramLoginError(outcome.message, true);
+
+      case "STALE_QUERY_ID":
+        throw new InstagramLoginError(outcome.message);
+
+      default:
+        throw new InstagramLoginError(outcome.message);
+    }
   }
 
   /**
@@ -108,28 +150,20 @@ class InstagramLoginManager {
     code: string,
   ): Promise<InstagramLoginState> {
     const session = this.require(userId, loginId);
+    if (session.phase === "AUTHENTICATED") return this.toState(session);
 
-    if (session.phase === "AUTHENTICATED") {
-      return this.toState(session);
-    }
-    if (!session.twoFactorIdentifier || !session.twoFactorMethod) {
-      throw new InstagramLoginError(
-        "This login is not waiting for a two-factor code",
-      );
+    const context = session.context;
+    if (!context) {
+      throw new InstagramLoginError("This login is not waiting for a code");
     }
 
-    const outcome = await session.client.submitTwoFactor(
-      session.username,
-      session.twoFactorIdentifier,
+    const outcome = await session.client.validateCode(
+      context,
+      session.selectedChannel ?? context.defaultChannel,
       code.replace(/\s+/g, ""),
-      session.twoFactorMethod,
     );
-
     if (outcome.kind === "REJECTED") {
-      throw new InstagramLoginError(
-        "Incorrect code — check and try again",
-        true,
-      );
+      throw new InstagramLoginError(outcome.message, true);
     }
     this.applyOutcome(session, outcome);
     return this.toState(session);
@@ -162,10 +196,7 @@ class InstagramLoginManager {
   // --- internals ---------------------------------------------------------
 
   /** Turn a client outcome into the session's next phase, or into an error. */
-  private applyOutcome(
-    session: LoginSession,
-    outcome: Awaited<ReturnType<InstagramWebLoginSession["login"]>>,
-  ): void {
+  private applyOutcome(session: LoginSession, outcome: LoginOutcome): void {
     switch (outcome.kind) {
       case "AUTHENTICATED":
         session.phase = "AUTHENTICATED";
@@ -177,13 +208,11 @@ class InstagramLoginManager {
 
       case "TWO_FACTOR_REQUIRED":
         session.phase = "AWAITING_CODE";
-        session.twoFactorIdentifier = outcome.identifier;
-        session.twoFactorMethod = outcome.preferred;
-        session.twoFactorMethods = outcome.methods;
-        session.phoneHint = outcome.phoneHint;
-        session.smsUnavailableReason = outcome.smsUnavailableReason;
-        // Instagram echoes the canonical username; use it from here on.
-        session.username = outcome.username;
+        session.context = outcome.context;
+        session.username = outcome.context.username;
+        // Nothing has been sent yet — Instagram waits to be asked.
+        session.selectedChannel = undefined;
+        session.codeSent = false;
         return;
 
       case "REJECTED":
@@ -196,31 +225,28 @@ class InstagramLoginManager {
             : "Instagram wants this login confirmed in a browser. Sign in at instagram.com, approve the attempt, then try again.",
         );
 
-      case "RATE_LIMITED":
-        throw new InstagramLoginError(outcome.message);
-
       default:
         throw new InstagramLoginError(outcome.message);
     }
   }
 
   private toState(session: LoginSession): InstagramLoginState {
+    const context = session.context;
+    const pending = session.phase === "AWAITING_CODE";
     return {
       login_id: session.id,
       phase: session.phase,
       username: session.username,
-      two_factor_method:
-        session.phase === "AWAITING_CODE" ? session.twoFactorMethod : undefined,
-      two_factor_methods:
-        session.phase === "AWAITING_CODE"
-          ? session.twoFactorMethods
-          : undefined,
-      phone_hint:
-        session.phase === "AWAITING_CODE" ? session.phoneHint : undefined,
-      sms_unavailable_reason:
-        session.phase === "AWAITING_CODE"
-          ? session.smsUnavailableReason
-          : undefined,
+      channels: pending ? (context?.channels ?? []) : undefined,
+      selected_channel: pending ? session.selectedChannel : undefined,
+      code_sent: pending ? session.codeSent : undefined,
+      masked_contact_point: pending ? context?.maskedContactPoint : undefined,
+      sms_unavailable_reason: pending
+        ? context?.smsUnavailableReason
+        : undefined,
+      sms_resend_delay_seconds: pending
+        ? context?.smsLimit?.resendDelaySeconds
+        : undefined,
     };
   }
 
@@ -250,9 +276,7 @@ class InstagramLoginManager {
   private evictExpired(): void {
     const cutoff = Date.now() - LOGIN_TTL_MS;
     for (const [id, session] of this.sessions) {
-      if (session.touchedAt < cutoff) {
-        this.sessions.delete(id);
-      }
+      if (session.touchedAt < cutoff) this.sessions.delete(id);
     }
   }
 

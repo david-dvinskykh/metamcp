@@ -4,6 +4,7 @@ import {
   CreateMcpServerResponseSchema,
   InstagramLoginIdSchema,
   InstagramLoginStateResponseSchema,
+  SendInstagramCodeRequestSchema,
   StartInstagramLoginRequestSchema,
   SubmitInstagramCodeRequestSchema,
 } from "@repo/zod-types";
@@ -20,6 +21,10 @@ import { protectedProcedure, router } from "../../trpc";
 export const createInstagramRouter = (implementations: {
   startLogin: (
     input: z.infer<typeof StartInstagramLoginRequestSchema>,
+    userId: string,
+  ) => Promise<z.infer<typeof InstagramLoginStateResponseSchema>>;
+  sendCode: (
+    input: z.infer<typeof SendInstagramCodeRequestSchema>,
     userId: string,
   ) => Promise<z.infer<typeof InstagramLoginStateResponseSchema>>;
   submitCode: (
@@ -46,6 +51,14 @@ export const createInstagramRouter = (implementations: {
       .output(InstagramLoginStateResponseSchema)
       .mutation(async ({ input, ctx }) => {
         return await implementations.startLogin(input, ctx.user.id);
+      }),
+
+    // Protected: Ask Instagram to deliver a code on a chosen channel
+    sendCode: protectedProcedure
+      .input(SendInstagramCodeRequestSchema)
+      .output(InstagramLoginStateResponseSchema)
+      .mutation(async ({ input, ctx }) => {
+        return await implementations.sendCode(input, ctx.user.id);
       }),
 
     // Protected: Answer the two-factor prompt
