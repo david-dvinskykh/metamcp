@@ -10,3 +10,4 @@ export * from "./api-keys.zod";
 export * from "./config.zod";
 export * from "./mcp-request-audit-logs.zod";
 export * from "./telegram.zod";
+export * from "./instagram.zod";

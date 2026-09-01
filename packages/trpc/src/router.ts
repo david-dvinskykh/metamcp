@@ -18,6 +18,7 @@ export const createAppRouter = (implementations: {
       logs: frontendRouters.logs,
       mcpRequestAuditLogs: frontendRouters.mcpRequestAuditLogs,
       telegram: frontendRouters.telegram,
+      instagram: frontendRouters.instagram,
     }),
   });
 };

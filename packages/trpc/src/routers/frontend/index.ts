@@ -1,6 +1,7 @@
 import { createApiKeysRouter } from "./api-keys";
 import { createConfigRouter } from "./config";
 import { createEndpointsRouter } from "./endpoints";
+import { createInstagramRouter } from "./instagram";
 import { createLogsRouter } from "./logs";
 import { createMcpRequestAuditLogsRouter } from "./mcp-request-audit-logs";
 import { createMcpServersRouter } from "./mcp-servers";
@@ -15,6 +16,7 @@ export { createEndpointsRouter };
 export { createOAuthRouter };
 export { createToolsRouter };
 export { createTelegramRouter };
+export { createInstagramRouter };
 export { createApiKeysRouter };
 export { createConfigRouter };
 export { createMcpRequestAuditLogsRouter };
@@ -30,6 +32,7 @@ export const createFrontendRouter = (implementations: {
   logs: Parameters<typeof createLogsRouter>[0];
   mcpRequestAuditLogs: Parameters<typeof createMcpRequestAuditLogsRouter>[0];
   telegram: Parameters<typeof createTelegramRouter>[0];
+  instagram: Parameters<typeof createInstagramRouter>[0];
 }) => {
   return {
     mcpServers: createMcpServersRouter(implementations.mcpServers),
@@ -44,5 +47,6 @@ export const createFrontendRouter = (implementations: {
       implementations.mcpRequestAuditLogs,
     ),
     telegram: createTelegramRouter(implementations.telegram),
+    instagram: createInstagramRouter(implementations.instagram),
   };
 };

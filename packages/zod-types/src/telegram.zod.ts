@@ -40,11 +40,9 @@ export const TelegramApiCredentialsSchema = z.object({
  * backend uses its own. Passing them here overrides the server's pair for this
  * one login. Either both or neither — a lone api_id has nothing to sign with.
  */
-export const StartTelegramLoginRequestSchema = TelegramApiCredentialsSchema
-  .partial()
-  .refine(
-    (data) =>
-      (data.api_id === undefined) === (data.api_hash === undefined),
+export const StartTelegramLoginRequestSchema =
+  TelegramApiCredentialsSchema.partial().refine(
+    (data) => (data.api_id === undefined) === (data.api_hash === undefined),
     "Provide both api_id and api_hash, or neither to use the server's",
   );
 
