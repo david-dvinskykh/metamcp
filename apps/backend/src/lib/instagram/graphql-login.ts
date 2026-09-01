@@ -141,6 +141,45 @@ export function extractLsd(html: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Build identifiers instagram.com stamps on every GraphQL call, read off the
+ * page that served the client. Each is optional on its own — they are sent when
+ * found and left out when not, rather than invented.
+ */
+export interface BuildParams {
+  rev?: string;
+  hasteSession?: string;
+  spinRevision?: string;
+  spinBranch?: string;
+  spinTime?: string;
+}
+
+export function extractBuildParams(html: string): BuildParams {
+  const first = (...patterns: RegExp[]): string | undefined => {
+    for (const pattern of patterns) {
+      const match = pattern.exec(html);
+      if (match?.[1]) return match[1];
+    }
+    return undefined;
+  };
+
+  const spinRevision = first(
+    /"__spin_r"\s*:\s*"?(\d+)"?/,
+    /"spin_r"\s*:\s*"?(\d+)"?/,
+  );
+
+  return {
+    rev: spinRevision ?? first(/"client_revision"\s*:\s*"?(\d+)"?/),
+    hasteSession: first(
+      /"haste_session"\s*:\s*"([^"]+)"/,
+      /"__hs"\s*:\s*"([^"]+)"/,
+    ),
+    spinRevision,
+    spinBranch: first(/"__spin_b"\s*:\s*"([^"]+)"/, /"spin_b"\s*:\s*"([^"]+)"/),
+    spinTime: first(/"__spin_t"\s*:\s*"?(\d+)"?/, /"spin_t"\s*:\s*"?(\d+)"?/),
+  };
+}
+
 export interface PasswordKey {
   keyId: number;
   /** Curve25519 public key, as the 64-character hex Instagram publishes. */
@@ -296,6 +335,32 @@ export function parseTwoFactorResult(
   };
 }
 
+/**
+ * Explain a login reply that carried no `caa_login_web` field.
+ *
+ * The point is to name what Instagram said rather than guess at a cause: its
+ * own error text when there is one, and otherwise the field names it did
+ * return, which is enough to tell a rejected request from a changed schema.
+ */
+export function describeEmptyLoginResult(
+  body: Record<string, unknown>,
+): string {
+  const errors = Array.isArray(body.errors) ? body.errors : [];
+  const messages = errors
+    .map((entry) => asString(asRecord(entry).message))
+    .filter((message): message is string => Boolean(message));
+
+  if (messages.length > 0) {
+    return `Instagram refused the sign-in: ${messages.join("; ")}. Use the cookie option instead.`;
+  }
+
+  const data = asRecord(body.data);
+  const fields = Object.keys(data);
+  return fields.length > 0
+    ? `Instagram answered the sign-in without a login result (it returned ${fields.join(", ")}). Its web client has probably changed; use the cookie option instead.`
+    : "Instagram answered the sign-in with an empty result. Its web client has probably changed; use the cookie option instead.";
+}
+
 /** A GraphQL reply naming a query id Instagram no longer serves. */
 function looksLikeStaleQueryId(body: JsonRecord): boolean {
   const errors = Array.isArray(body.errors) ? body.errors : [];
@@ -310,6 +375,7 @@ export class InstagramGraphqlLogin {
   private readonly baseUrl: string;
   private lsd?: string;
   private passwordKey?: PasswordKey;
+  private build: BuildParams = {};
   /** Stable per-attempt ids the mutations expect to see repeated. */
   private readonly deviceId = randomUUID().toUpperCase();
   private readonly waterfallId = randomUUID();
@@ -336,6 +402,7 @@ export class InstagramGraphqlLogin {
     tried.push(`login page (HTTP ${page.status})`);
     this.lsd = extractLsd(html);
     this.passwordKey = extractPasswordKey(html);
+    this.build = extractBuildParams(html);
 
     // Older builds also served both from the shared-data endpoint.
     if (!this.lsd || !this.passwordKey) {
@@ -411,7 +478,20 @@ export class InstagramGraphqlLogin {
     );
     if ("failure" in result) return result.failure;
 
-    const login = asRecord(asRecord(result.data.data).caa_login_web);
+    const data = asRecord(result.data.data);
+    const loginField = data.caa_login_web;
+
+    // No `caa_login_web` at all means the mutation did not run as asked — a
+    // rejected query id, a missing parameter, a block. Reporting that as bad
+    // credentials sends the user off checking a password that was never the
+    // problem, so say what Instagram actually returned instead.
+    if (loginField === undefined || loginField === null) {
+      return {
+        kind: "ERROR",
+        message: describeEmptyLoginResult(result.data),
+      };
+    }
+    const login = asRecord(loginField);
 
     const context = parseTwoFactorResult(login.two_factor_result);
     if (context) {
@@ -549,7 +629,11 @@ export class InstagramGraphqlLogin {
 
     const form = new URLSearchParams({
       av: "0",
+      __d: "www",
+      __user: "0",
       __a: "1",
+      __req: "1",
+      __ccg: "EXCELLENT",
       __comet_req: "7",
       dpr: "1",
       lsd,
@@ -560,6 +644,19 @@ export class InstagramGraphqlLogin {
       doc_id: docId,
       variables: JSON.stringify(variables),
     });
+
+    // Build stamps, when the page gave them up. The browser sends these on
+    // every call; they are omitted rather than faked when the page has none.
+    const stamps: Array<[string, string | undefined]> = [
+      ["__hs", this.build.hasteSession],
+      ["__rev", this.build.rev],
+      ["__spin_r", this.build.spinRevision],
+      ["__spin_b", this.build.spinBranch],
+      ["__spin_t", this.build.spinTime],
+    ];
+    for (const [name, value] of stamps) {
+      if (value) form.set(name, value);
+    }
 
     let response: Response;
     let text: string;
@@ -646,11 +743,14 @@ export class InstagramGraphqlLogin {
       ...common,
       Accept: "*/*",
       "X-IG-App-ID": WEB_APP_ID,
+      // Instagram stamps this on every call from its own web client.
+      "X-ASBD-ID": "359341",
       "X-Requested-With": "XMLHttpRequest",
       "Sec-Fetch-Dest": "empty",
       "Sec-Fetch-Mode": "cors",
       "Sec-Fetch-Site": "same-origin",
-      Referer: this.url(LOGIN_PAGE_PATH),
+      // The recorded login referred to the site root, not the login page.
+      Referer: `${this.baseUrl}/`,
       Origin: this.baseUrl,
       ...(csrfToken ? { "X-CSRFToken": csrfToken } : {}),
     };

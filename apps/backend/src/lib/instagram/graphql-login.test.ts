@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   computeJazoest,
+  describeEmptyLoginResult,
   encryptPassword,
+  extractBuildParams,
   extractLsd,
   extractPasswordKey,
   parseTwoFactorResult,
@@ -126,6 +128,52 @@ describe("encryptPassword", () => {
     const first = await encryptPassword("hunter2", key, 1788258998);
     const second = await encryptPassword("hunter2", key, 1788258998);
     expect(first).not.toBe(second);
+  });
+});
+
+describe("extractBuildParams", () => {
+  it("reads the stamps the browser repeats on every call", () => {
+    // Values and field names are from the recorded login.
+    const html = `{"__spin_r":1046506236,"__spin_b":"trunk","__spin_t":1788258987,"haste_session":"20697.HYP:instagram_web_pkg.2.1...0"}`;
+    expect(extractBuildParams(html)).toEqual({
+      rev: "1046506236",
+      spinRevision: "1046506236",
+      spinBranch: "trunk",
+      spinTime: "1788258987",
+      hasteSession: "20697.HYP:instagram_web_pkg.2.1...0",
+    });
+  });
+
+  it("returns nothing rather than inventing stamps", () => {
+    expect(extractBuildParams("<html></html>")).toEqual({
+      rev: undefined,
+      spinRevision: undefined,
+      spinBranch: undefined,
+      spinTime: undefined,
+      hasteSession: undefined,
+    });
+  });
+});
+
+describe("describeEmptyLoginResult", () => {
+  it("repeats what Instagram said instead of blaming the password", () => {
+    expect(
+      describeEmptyLoginResult({
+        errors: [{ message: "Query not found" }, { message: "and again" }],
+      }),
+    ).toContain("Query not found; and again");
+  });
+
+  it("names the fields that did come back, to tell a schema change apart", () => {
+    const message = describeEmptyLoginResult({
+      data: { something_else: {} },
+    });
+    expect(message).toContain("something_else");
+    expect(message).toContain("cookie option");
+  });
+
+  it("still says something useful for a wholly empty body", () => {
+    expect(describeEmptyLoginResult({})).toContain("empty result");
   });
 });
 
