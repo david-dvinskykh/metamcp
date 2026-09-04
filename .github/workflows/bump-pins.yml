@@ -1,0 +1,106 @@
+name: Bump pinned components
+
+# Единственный кусок автообновления, которого не хватало: все внешние
+# компоненты в Dockerfile.all-in-one запинены по версии или коммиту, и сами по
+# себе они не двигались.
+#
+# Цепочка целиком:
+#   этот воркфлоу по расписанию -> scripts/bump_pins.py переписывает ARG'и ->
+#   коммит в дефолтную ветку -> сборка arm64-образа (тот же docker-arm64.yml,
+#   вызванный как переиспользуемый воркфлоу) -> тег latest в ghcr ->
+#   watchtower на Raspberry Pi выкатывает новый контейнер.
+#
+# Почему сборка вызывается через `uses:`, а не оставлена на триггер push:
+# пуш, сделанный с GITHUB_TOKEN, намеренно не запускает другие воркфлоу
+# (защита от рекурсии). Без явного вызова коммит бота лёг бы в ветку, а образ
+# так и остался бы старым.
+#
+# Пины остаются в git: каждое автообновление видно в истории и откатывается
+# одним `git revert`.
+
+on:
+  schedule:
+    # 03:17 UTC — заведомо вне окна ночного обслуживания и не в :00, когда
+    # очередь GitHub Actions самая длинная.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  # Мгновенная реакция вместо ожидания ночи: репозиторий компонента может
+  # дёрнуть этот воркфлоу сразу после своего пуша.
+  #   gh api repos/david-dvinskykh/metamcp/dispatches \
+  #     -f event_type=upstream-changed
+  # Нужен PAT с правом contents:write в этом репозитории — GITHUB_TOKEN чужого
+  # репозитория сюда не дотянется.
+  repository_dispatch:
+    types: [upstream-changed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bump-pins
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.bump.outputs.changed }}
+      sha: ${{ steps.push.outputs.sha }}
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Resolve newest upstream versions
+        id: bump
+        run: |
+          set -euo pipefail
+          python3 scripts/bump_pins.py
+          if git diff --quiet -- Dockerfile.all-in-one; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "summary=$(cat bump-summary.txt)" >> "$GITHUB_OUTPUT"
+            git --no-pager diff -- Dockerfile.all-in-one
+          fi
+
+      - name: Commit and push
+        id: push
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          SUMMARY: ${{ steps.bump.outputs.summary }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Dockerfile.all-in-one
+          git commit -m "chore(deps): bump pinned components" -m "${SUMMARY}"
+          git push
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        env:
+          CHANGED: ${{ steps.bump.outputs.changed }}
+          SUMMARY: ${{ steps.bump.outputs.summary }}
+        run: |
+          if [ "$CHANGED" = "true" ]; then
+            printf '### Обновлено\n\n```\n%s\n```\n' "${SUMMARY//; /$'\n'}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Всё уже на последних версиях." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  build:
+    needs: bump
+    if: needs.bump.outputs.changed == 'true'
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    uses: ./.github/workflows/docker-arm64.yml
+    with:
+      ref: ${{ needs.bump.outputs.sha }}
+    secrets: inherit

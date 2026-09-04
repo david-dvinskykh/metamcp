@@ -45,3 +45,6 @@ yarn-error.log*
 # Docker Files
 docker-compose.override.yml
 compose.override.yml
+
+# Сводка запуска scripts/bump_pins.py, читается воркфлоу и не коммитится
+bump-summary.txt

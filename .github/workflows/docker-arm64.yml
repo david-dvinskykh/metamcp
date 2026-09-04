@@ -12,13 +12,29 @@ name: Build and Push ARM64 image (all-in-one)
 #     latest, на который смотрит watchtower, гарантированно поехал вперёд;
 #   • пуш в claude/** — только если тронуты Dockerfile.all-in-one или сам
 #     воркфлоу, иначе каждый коммит в рабочую ветку запускал бы часовую сборку;
-#   • ручной запуск — всегда.
+#   • ручной запуск — всегда;
+#   • вызов из bump-pins.yml как переиспользуемого воркфлоу (workflow_call) —
+#     всегда: пуш, сделанный ботом с GITHUB_TOKEN, триггер push не поднимает,
+#     поэтому автообновление пинов зовёт сборку явно и передаёт свой коммит
+#     в inputs.ref.
 #
 # Условие живёт в job'е changes, а не в фильтре paths триггера: paths один на
 # все ветки, и с ним мердж в ai-dev, не трогающий эти два файла, не собирал бы
 # ничего — latest молча оставался бы на предыдущем образе.
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Коммит или ветка для сборки. Пусто — коммит текущего запуска"
+        type: string
+        default: ""
+      metamcp_base:
+        type: string
+        default: source
+      extra_tag:
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       metamcp_base:
@@ -59,6 +75,7 @@ jobs:
         with:
           # Нужна история: сравниваем состояние до и после пуша.
           fetch-depth: 0
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Decide whether to build
         id: decide
@@ -120,8 +137,13 @@ jobs:
           docker system prune -af || true
           df -h /
 
+      # inputs.ref: при вызове из bump-pins.yml собирать надо коммит бота, а не
+      # github.sha, который зафиксирован на начале запуска — то есть на
+      # состоянии ДО обновления пинов.
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -167,7 +189,7 @@ jobs:
           build-args: |
             METAMCP_BASE=${{ inputs.metamcp_base || 'source' }}
             METAMCP_REPO=${{ github.server_url }}/${{ github.repository }}.git
-            METAMCP_COMMIT=${{ github.sha }}
+            METAMCP_COMMIT=${{ inputs.ref || github.sha }}
           cache-from: type=gha,scope=all-in-one-arm64
           # ignore-error: кэш GitHub Actions ограничен 10 ГБ, слепок сборки
           # в него может не влезть — это не повод валить сборку.
@@ -182,6 +204,10 @@ jobs:
           METAMCP_BASE: ${{ inputs.metamcp_base || 'source' }}
         run: |
           set -euxo pipefail
+          # Версии больше не зашиты в проверку: bump-pins.yml двигает ARG'и сам,
+          # и захардкоженное число делало бы каждое автообновление красной сборкой.
+          LIGHTPANDA_EXPECTED=$(sed -n 's/^ARG LIGHTPANDA_VERSION=//p' Dockerfile.all-in-one)
+          test -n "$LIGHTPANDA_EXPECTED"
           # Освобождаем место под docker pull: слепок сборки уже уехал в gha-кэш.
           docker buildx prune -af || true
           df -h /
@@ -189,7 +215,7 @@ jobs:
 
           test "$(docker image inspect --format '{{.Architecture}}' "$IMAGE")" = "arm64"
 
-          docker run --rm --entrypoint /bin/sh "$IMAGE" -euxc '
+          docker run --rm -e LIGHTPANDA_EXPECTED --entrypoint /bin/sh "$IMAGE" -euxc '
             test "$(uname -m)" = "aarch64"
             command -v telegram-mcp
             command -v mcp-instagram-dm
@@ -198,12 +224,13 @@ jobs:
             command -v one-zenwallet-mcp
             command -v gocardless-mcp
             command -v better-telegram-mcp
+            command -v mcp-server-fetch
             command -v portainer-mcp
             command -v lightpanda
             command -v lightpanda-mcp
             # версия должна совпадать с LIGHTPANDA_VERSION: nightly-тег
             # переписывается, и подмена релиза иначе прошла бы незаметно
-            test "$(lightpanda version)" = "0.3.7"
+            test "$(lightpanda version)" = "$LIGHTPANDA_EXPECTED"
             # ровно та регрессия, из-за которой сервер и переехал в образ:
             # mcp 2.0 убрал mcp.server.fastmcp, а пакет верхнюю границу не ставит
             # ничто в кэше uv не должно принадлежать root: иначе uv run от
@@ -213,11 +240,17 @@ jobs:
             # uvx-серверу может понадобиться своя версия интерпретатора
             test "${UV_PYTHON_DOWNLOADS:-unset}" != "never"
             test -w "$HOME"
-            py=$(ls -d /opt/uv-tools/*/bin/python | head -1)
+            py=/opt/uv-tools/better-telegram-mcp/bin/python
+            test -x "$py"
             "$py" -c "import better_telegram_mcp, mcp.server.fastmcp"
             "$py" -c "import importlib.metadata as m; v=m.version(\"mcp\"); assert int(v.split(\".\")[0]) < 2, v; print(\"mcp\", v)"
             /usr/local/lib/portainer-mcp/portainer-mcp -h 2>&1 | grep -q -- "-disable-version-check"
             /opt/telegram-mcp/.venv/bin/python -c "import telethon, mcp; print(telethon.__version__)"
+            # обёртки Python-серверов не должны звать uv: `uv run` остаётся
+            # процессом-родителем на всё время жизни сервера и стоит десятки МБ
+            ! grep -q "uv " /usr/local/bin/telegram-mcp
+            head -1 /usr/local/bin/better-telegram-mcp | grep -q "^#!/opt/uv-tools/"
+            head -1 /usr/local/bin/mcp-server-fetch | grep -q "^#!/opt/uv-tools/"
             node /usr/local/lib/zenmoney-mcp-ddvin/build/index.js --help >/dev/null 2>&1 || true
             test -f /usr/local/lib/zenmoney-mcp-ddvin/build/index.js
             test -f /usr/local/lib/gocardless-mcp/build/index.js
