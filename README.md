@@ -494,15 +494,17 @@ Each user can instead connect their own Telegram bot and their own Google Drive 
   their own), with `$APP_URL/file-relay/google/callback` registered as an authorized redirect
   URI.
 
-**One user can never use another's credentials or authorized tools.** The relay acts strictly
-as the account whose API key or OAuth token authenticated the MCP session:
+**One user can never use another's credentials or authorized tools.** The account the relay acts as is fixed by
+the API key, the OAuth token, or the endpoint — never by anything the caller sends:
 
 - Credentials are read and written only by user id — there is no lookup that returns a row
   without one.
 - Access tokens are cached per credential, so a token minted for one Drive grant is never
   served to another.
-- A public endpoint (`enable_auth` off) has no owner, so it gets **no** user credentials at
-  all rather than inheriting somebody's; it can still use the deployment-wide ones.
+- An endpoint with auth off acts as **the endpoint's own owner**, not as whoever called it.
+  Such an endpoint is reached by knowing its URL and already serves that owner's MCP
+  servers, so the relay acting as the same owner adds no reach; an endpoint with no owner
+  at all gets no user credentials and falls back to the deployment-wide ones.
 - `tools/list` is resolved per caller: a user with no Drive is not offered the Drive tool.
 - The Google callback is public by necessity (Google redirects a browser to it), so the
   account is decided by a single-use, ten-minute, 256-bit `state` bound to the user who

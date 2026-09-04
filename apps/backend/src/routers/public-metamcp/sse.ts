@@ -31,6 +31,7 @@ function getRequestContext(
       apiKeyUuid: req.apiKeyUuid,
       apiKeyUserId: req.apiKeyUserId,
       oauthUserId: req.oauthUserId,
+      endpointUserId: req.endpoint?.user_id ?? undefined,
     },
   };
 }

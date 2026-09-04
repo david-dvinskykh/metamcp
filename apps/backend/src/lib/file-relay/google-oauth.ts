@@ -349,8 +349,46 @@ async function exchangeCode(
     ok: true,
     refreshToken: body.refresh_token,
     scope: body.scope,
-    email: readEmailFromIdToken(body.id_token),
+    // The id_token only carries an email when the openid/email scopes were
+    // asked for, which a Drive-only consent does not. Fall back to asking
+    // Drive itself who it just let in — that works with the scope already
+    // granted, and costs one request at connect time.
+    email:
+      readEmailFromIdToken(body.id_token) ??
+      (await readEmailFromDrive(body.access_token)),
   };
+}
+
+/**
+ * The account behind a fresh access token, for the connection's label.
+ *
+ * Best effort: a failure here costs a nicer label, never the connection, so
+ * every error resolves to undefined rather than throwing.
+ */
+async function readEmailFromDrive(
+  accessToken?: string,
+): Promise<string | undefined> {
+  if (!accessToken) {
+    return undefined;
+  }
+  try {
+    const res = await fetch(
+      "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName)",
+      {
+        headers: { authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (!res.ok) {
+      return undefined;
+    }
+    const body = (await res.json()) as {
+      user?: { emailAddress?: string; displayName?: string };
+    };
+    return body.user?.emailAddress || body.user?.displayName || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

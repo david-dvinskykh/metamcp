@@ -67,6 +67,7 @@ import {
 } from "./google-oauth";
 import {
   resolveGoogleDrive,
+  resolveRelayCaller,
   resolveTelegramBotToken,
 } from "./user-credentials";
 
@@ -350,5 +351,54 @@ describe("Google Drive consent state", () => {
     });
     expect(result.ok).toBe(false);
     expect(rows.size).toBe(0);
+  });
+});
+
+describe("which account a relay call acts as", () => {
+  it("prefers the authenticated identity over the endpoint's owner", () => {
+    expect(
+      resolveRelayCaller({
+        method: "api_key",
+        apiKeyUserId: "alice",
+        endpointUserId: "owner",
+      }).userId,
+    ).toBe("alice");
+
+    expect(
+      resolveRelayCaller({
+        method: "oauth",
+        oauthUserId: "bob",
+        endpointUserId: "owner",
+      }).userId,
+    ).toBe("bob");
+  });
+
+  it("acts as the endpoint's owner when the endpoint has auth off", () => {
+    // Such an endpoint is reached by knowing its URL and already serves its
+    // owner's MCP servers, so the relay acting as that owner adds no reach.
+    expect(
+      resolveRelayCaller({ method: "none", endpointUserId: "owner" }).userId,
+    ).toBe("owner");
+  });
+
+  it("acts as nobody when the endpoint has no owner", () => {
+    expect(resolveRelayCaller({ method: "none" }).userId).toBeUndefined();
+    expect(resolveRelayCaller(undefined).userId).toBeUndefined();
+  });
+
+  it("never lets the caller pick the account", () => {
+    // The owner is whatever the endpoint says. There is no input here a
+    // client could set to be resolved as somebody else.
+    const asOwner = resolveRelayCaller({
+      method: "none",
+      endpointUserId: "alice",
+    });
+    const asOther = resolveRelayCaller({
+      method: "none",
+      endpointUserId: "bob",
+    });
+    expect(asOwner.userId).toBe("alice");
+    expect(asOther.userId).toBe("bob");
+    expect(asOwner.userId).not.toBe(asOther.userId);
   });
 });

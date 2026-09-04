@@ -24,6 +24,36 @@ export interface RelayCaller {
 }
 
 /**
+ * The authentication facts a relay call arrives with, as the MCP handler
+ * context records them. Declared structurally so this module stays independent
+ * of the proxy's own types.
+ */
+export interface RelayAuthContext {
+  method?: "api_key" | "oauth" | "none";
+  apiKeyUserId?: string;
+  oauthUserId?: string;
+  endpointUserId?: string;
+}
+
+/**
+ * Decide whose credentials a relay call may act with.
+ *
+ * The authenticated identity wins: the API key's owner, then the OAuth
+ * subject. Failing both, the owner of the endpoint the call came through — an
+ * endpoint with auth off is reached by knowing its URL and already serves that
+ * owner's own MCP servers, so acting as the same owner adds no reach.
+ *
+ * In every branch the account is fixed by the key, the token, or the endpoint,
+ * and never by anything the caller sends. An endpoint with no owner resolves
+ * to no user at all rather than to somebody arbitrary.
+ */
+export function resolveRelayCaller(auth?: RelayAuthContext): RelayCaller {
+  return {
+    userId: auth?.apiKeyUserId ?? auth?.oauthUserId ?? auth?.endpointUserId,
+  };
+}
+
+/**
  * How a credential was resolved. `user` is the caller's own connection;
  * `deployment` is the operator's shared configuration from the environment,
  * which belongs to nobody in particular and stays available as a fallback.

@@ -17,6 +17,16 @@ export interface MetaMCPHandlerContext {
     apiKeyUuid?: string;
     apiKeyUserId?: string;
     oauthUserId?: string;
+    /**
+     * Owner of the endpoint this session came through, when it has one.
+     *
+     * An endpoint whose auth is off is reached by knowing its URL, and it
+     * already exposes its owner's own MCP servers — so features that act with
+     * stored credentials fall back to this owner rather than to nobody. It is
+     * fixed by the endpoint, never chosen by the caller, and an endpoint with
+     * no owner (`user_id` null) leaves it undefined.
+     */
+    endpointUserId?: string;
   };
 }
 

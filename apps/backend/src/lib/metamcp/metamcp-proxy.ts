@@ -39,6 +39,7 @@ import {
   getFileRelayToolsForMcp,
   isFileRelayToolName,
   RelayCaller,
+  resolveRelayCaller,
 } from "../file-relay";
 import { ConnectedClient } from "./client";
 import { getMcpServers } from "./fetch-metamcp";
@@ -673,16 +674,17 @@ export const createServer = async (
   /**
    * Whose credentials the file relay may act with on this session.
    *
-   * Only the identity that authenticated the request counts — the API key's
-   * owner, or the OAuth subject. A session with `auth.method === "none"` (a
-   * public endpoint) has no owner, and gets an empty caller rather than
-   * inheriting anyone's connection: that is what stops one user's Drive or
-   * Telegram bot from being reachable through another user's endpoint.
+   * The authenticated identity comes first — the API key's owner, or the
+   * OAuth subject. Failing that, the owner of the endpoint the request came
+   * through: an endpoint with auth off is reached by knowing its URL, and it
+   * already serves that owner's own MCP servers, so the relay acting as the
+   * same owner adds no reach. In every case the account is fixed by the key,
+   * the token, or the endpoint — never chosen by the caller — so one user's
+   * Drive or Telegram bot stays unreachable through another user's endpoint.
+   * An endpoint with no owner yields an empty caller and no user credentials.
    */
-  const relayCaller = (): RelayCaller => ({
-    userId:
-      handlerContext.auth?.apiKeyUserId ?? handlerContext.auth?.oauthUserId,
-  });
+  const relayCaller = (): RelayCaller =>
+    resolveRelayCaller(handlerContext.auth);
 
   // Set up the handlers with middleware
   server.setRequestHandler(ListToolsRequestSchema, async (request) => {
