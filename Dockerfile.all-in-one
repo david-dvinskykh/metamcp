@@ -53,6 +53,12 @@ ARG TELEGRAM_MCP_COMMIT=7ea0adc8d0535e8dae02d07587d44321cca0db09
 # (Requires-Python ==3.13.*) — системный python3 в trixie как раз 3.13.
 ARG BETTER_TELEGRAM_MCP_VERSION=4.17.0
 
+# modelcontextprotocol/servers, пакет mcp-server-fetch. Ставится в образ, чтобы
+# конфиг сервера в MetaMCP звал готовую консольную команду вместо `uvx`.
+# Собственная зависимость пакета — mcp<2,>=1.29.0, отдельный `--with "mcp<2"`
+# ей не нужен.
+ARG MCP_SERVER_FETCH_VERSION=2026.8.18
+
 ARG INSTAGRAM_DM_VERSION=2.1.1
 ARG ZENMONEY_NPM_VERSION=0.3.1
 # 0.6.0 @ 2026-08-22 «Merge reminder tools with the edit/debt line» — к
@@ -434,6 +440,7 @@ FROM metamcp-${METAMCP_BASE} AS runner
 
 ARG TELEGRAM_MCP_COMMIT
 ARG BETTER_TELEGRAM_MCP_VERSION
+ARG MCP_SERVER_FETCH_VERSION
 ARG INSTAGRAM_DM_VERSION
 ARG ZENMONEY_NPM_VERSION
 
@@ -504,6 +511,17 @@ RUN set -eux; \
     "${py}" -c "import better_telegram_mcp, mcp.server.fastmcp"; \
     "${py}" -c "import importlib.metadata as m; v=m.version('mcp'); assert int(v.split('.')[0]) < 2, v; print('mcp', v)"
 
+# --- mcp-server-fetch -----------------------------------------------------
+# Тот же приём, что и с better-telegram-mcp: `uv tool install` кладёт в
+# /usr/local/bin шим с шебангом на питон своего venv, поэтому сервер стартует
+# без процесса-родителя uv и без резолва зависимостей в рантайме.
+RUN set -eux; \
+    UV_PYTHON_DOWNLOADS=never uv tool install --python /usr/bin/python3 \
+      "mcp-server-fetch==${MCP_SERVER_FETCH_VERSION}"; \
+    chown -R nextjs:nodejs /opt/uv-tools "${UV_CACHE_DIR}"; \
+    command -v mcp-server-fetch; \
+    head -1 /usr/local/bin/mcp-server-fetch | grep -q '^#!/opt/uv-tools/'
+
 # --- npm-серверы ----------------------------------------------------------
 # Версии зафиксированы: `npm install -g <pkg>` без версии при каждой пересборке
 # ставит свежий релиз, и образ перестаёт быть воспроизводимым.
@@ -551,6 +569,14 @@ COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpa
 # равно нужен: с --http-cache-dir/--cookie-jar он пишет в текущую директорию,
 # а /app от nextjs недоступен на запись.
 #
+# telegram-mcp зовёт .venv напрямую, а не через `uv run`. `uv run` не
+# завершается после старта: он остаётся процессом-родителем питона на всё время
+# жизни сервера и стоит 29-46 МБ RSS (замер в живом контейнере 2026-09-04).
+# Venv собран на этапе сборки `uv sync --frozen --no-dev`, поэтому резолвить в
+# рантайме нечего — `--frozen --no-dev` здесь были бы no-op. MetaMCP держит до
+# пяти копий каждого stdio-сервера (maxConnectionsPerServer), так что каждая
+# лишняя обёртка умножается на пять.
+#
 # LIGHTPANDA_DISABLE_TELEMETRY выставляется в обёртке, а не в ENV образа:
 # без него сервер на каждом запуске сыплет в stderr «telemetry ... flush
 # err=CouldntConnect» (стенд закрыт от исходящих соединений), а MetaMCP
@@ -580,7 +606,8 @@ RUN set -eux; \
     printf '%s\n' \
       '#!/bin/sh' \
       'set -e' \
-      'exec uv --directory /opt/telegram-mcp run --frozen --no-dev main.py "$@"' \
+      'cd /opt/telegram-mcp' \
+      'exec /opt/telegram-mcp/.venv/bin/python3 main.py "$@"' \
       > /usr/local/bin/telegram-mcp; \
     \
     printf '%s\n' \
