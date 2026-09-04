@@ -38,6 +38,7 @@ import {
   executeFileRelayTool,
   getFileRelayToolsForMcp,
   isFileRelayToolName,
+  RelayCaller,
 } from "../file-relay";
 import { ConnectedClient } from "./client";
 import { getMcpServers } from "./fetch-metamcp";
@@ -669,6 +670,20 @@ export const createServer = async (
     // createAuthorizationMiddleware(),
   )(originalCallToolHandler);
 
+  /**
+   * Whose credentials the file relay may act with on this session.
+   *
+   * Only the identity that authenticated the request counts — the API key's
+   * owner, or the OAuth subject. A session with `auth.method === "none"` (a
+   * public endpoint) has no owner, and gets an empty caller rather than
+   * inheriting anyone's connection: that is what stops one user's Drive or
+   * Telegram bot from being reachable through another user's endpoint.
+   */
+  const relayCaller = (): RelayCaller => ({
+    userId:
+      handlerContext.auth?.apiKeyUserId ?? handlerContext.auth?.oauthUserId,
+  });
+
   // Set up the handlers with middleware
   server.setRequestHandler(ListToolsRequestSchema, async (request) => {
     const result = await listToolsWithMiddleware(request, handlerContext);
@@ -680,7 +695,7 @@ export const createServer = async (
 
     // Built-in file relay: moves bytes between two servers of this namespace
     // without routing them through the client's context window.
-    result.tools.push(...getFileRelayToolsForMcp());
+    result.tools.push(...(await getFileRelayToolsForMcp(relayCaller())));
 
     return result;
   });
@@ -713,6 +728,7 @@ export const createServer = async (
             { method: "tools/call", params: { name, arguments: args } },
             handlerContext,
           ),
+        relayCaller(),
       );
     }
 

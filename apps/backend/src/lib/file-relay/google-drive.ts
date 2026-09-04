@@ -1,16 +1,12 @@
-import { createSign } from "node:crypto";
+import { createHash, createSign } from "node:crypto";
 
 import logger from "@/utils/logger";
 
-import {
-  getGoogleDriveCredentials,
-  getGoogleDriveDefaultFolderId,
-  getGoogleDriveScope,
-  GoogleDriveCredentials,
-} from "./config";
+import { GoogleDriveCredentials } from "./config";
 import { FileRelayError } from "./errors";
 import { GoogleDriveDestinationInput } from "./schemas";
 import { StagedFile, stagingStore } from "./staging-store";
+import { RelayCaller, resolveGoogleDrive } from "./user-credentials";
 
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const RETURNED_FIELDS =
@@ -71,15 +67,28 @@ interface CachedToken {
   expiresAt: number;
 }
 
-let cachedToken: CachedToken | undefined;
+/**
+ * Access tokens, keyed by the credential that minted them.
+ *
+ * A single shared slot was safe while Drive was one deployment-wide grant. It
+ * is not once each user connects their own: whoever refreshed last would hand
+ * their token to the next caller. The key is derived from the credential, so
+ * two users can never collide in here.
+ */
+const tokenCache = new Map<string, CachedToken>();
 
-export function isGoogleDriveConfigured(): boolean {
-  return getGoogleDriveCredentials() !== undefined;
+function cacheKeyFor(credentials: GoogleDriveCredentials): string {
+  const secret =
+    credentials.kind === "refresh_token"
+      ? `${credentials.clientId ?? ""}:${credentials.refreshToken ?? ""}`
+      : `${credentials.clientEmail ?? ""}:${credentials.subject ?? ""}`;
+  // Hashed so the cache key itself is not a copy of the refresh token.
+  return `${credentials.kind}:${createHash("sha256").update(secret).digest("hex")}`;
 }
 
 /** Clears the in-process access token cache (used by tests). */
 export function resetGoogleDriveTokenCache(): void {
-  cachedToken = undefined;
+  tokenCache.clear();
 }
 
 function base64Url(input: Buffer | string): string {
@@ -97,13 +106,14 @@ function base64Url(input: Buffer | string): string {
  */
 function buildServiceAccountAssertion(
   credentials: GoogleDriveCredentials,
+  scope: string,
 ): string {
   const issuedAt = Math.floor(Date.now() / 1000);
   const header = base64Url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
   const claims = base64Url(
     JSON.stringify({
       iss: credentials.clientEmail,
-      scope: getGoogleDriveScope(),
+      scope,
       aud: TOKEN_ENDPOINT,
       iat: issuedAt,
       exp: issuedAt + 3600,
@@ -126,6 +136,7 @@ function buildServiceAccountAssertion(
 
 async function requestAccessToken(
   credentials: GoogleDriveCredentials,
+  scope: string,
 ): Promise<CachedToken> {
   const body =
     credentials.kind === "refresh_token"
@@ -137,7 +148,7 @@ async function requestAccessToken(
         })
       : new URLSearchParams({
           grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-          assertion: buildServiceAccountAssertion(credentials),
+          assertion: buildServiceAccountAssertion(credentials, scope),
         });
 
   const response = await fetch(TOKEN_ENDPOINT, {
@@ -172,20 +183,23 @@ async function requestAccessToken(
   };
 }
 
-async function getAccessToken(): Promise<string> {
-  const credentials = getGoogleDriveCredentials();
-  if (!credentials) {
+async function getAccessToken(caller: RelayCaller): Promise<string> {
+  const resolved = await resolveGoogleDrive(caller);
+  if (!resolved) {
     throw new FileRelayError(
-      "Google Drive is not configured. Set GOOGLE_DRIVE_CLIENT_ID / GOOGLE_DRIVE_CLIENT_SECRET / GOOGLE_DRIVE_REFRESH_TOKEN, or GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON.",
+      "Google Drive is not connected for this account. Connect it under Settings, or have the operator configure a deployment-wide Drive.",
     );
   }
 
-  if (cachedToken && cachedToken.expiresAt > Date.now()) {
-    return cachedToken.accessToken;
+  const key = cacheKeyFor(resolved.credentials);
+  const cached = tokenCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.accessToken;
   }
 
-  cachedToken = await requestAccessToken(credentials);
-  return cachedToken.accessToken;
+  const token = await requestAccessToken(resolved.credentials, resolved.scope);
+  tokenCache.set(key, token);
+  return token.accessToken;
 }
 
 /**
@@ -198,19 +212,23 @@ async function getAccessToken(): Promise<string> {
 export async function uploadStagedFileToDrive(
   file: StagedFile,
   destination: GoogleDriveDestinationInput,
+  caller: RelayCaller,
 ): Promise<DriveUploadResult> {
   const sourceMimeType = destination.mimeType || file.mimeType;
 
-  const session = await createDriveUploadSession({
-    fileName: destination.fileName || file.fileName,
-    folderId: destination.folderId,
-    mimeType: sourceMimeType,
-    sizeBytes: file.size,
-    description: destination.description,
-    convertToGoogleDoc: destination.convertToGoogleDoc,
-  });
+  const session = await createDriveUploadSession(
+    {
+      fileName: destination.fileName || file.fileName,
+      folderId: destination.folderId,
+      mimeType: sourceMimeType,
+      sizeBytes: file.size,
+      description: destination.description,
+      convertToGoogleDoc: destination.convertToGoogleDoc,
+    },
+    caller,
+  );
 
-  const accessToken = await getAccessToken();
+  const accessToken = await getAccessToken(caller);
 
   // The bytes are read from disk only here, at the last possible moment, and
   // are never serialised into an MCP result.
@@ -269,9 +287,11 @@ export async function uploadStagedFileToDrive(
  */
 export async function createDriveUploadSession(
   input: DriveUploadSessionInput,
+  caller: RelayCaller,
 ): Promise<DriveUploadSession> {
-  const accessToken = await getAccessToken();
-  const folderId = input.folderId || getGoogleDriveDefaultFolderId();
+  const accessToken = await getAccessToken(caller);
+  const folderId =
+    input.folderId || (await resolveGoogleDrive(caller))?.defaultFolderId;
   const mimeType = input.mimeType || DEFAULT_UPLOAD_MIME_TYPE;
 
   const metadata = buildDriveMetadata({

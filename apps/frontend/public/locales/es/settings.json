@@ -51,5 +51,30 @@
   "resetToDefaults": "Restaurar Valores por Defecto",
   "confirmReset": "¿Está seguro de que desea restaurar todas las configuraciones a sus valores por defecto?",
   "resetConfirmation": "Esta acción no se puede deshacer. Todas las configuraciones personalizadas se perderán.",
-  "reset": "Restaurar"
+  "reset": "Restaurar",
+
+  "fileRelay": {
+    "title": "Conexiones del relay de archivos",
+    "description": "Conecta tu propio bot de Telegram y tu Google Drive para las herramientas del relay de archivos.",
+    "telegramTitle": "Bot de Telegram",
+    "telegramDescription": "El bot con el que el relay descarga archivos. Crea uno con @BotFather y pega su token.",
+    "telegramDialogTitle": "Conectar un bot de Telegram",
+    "telegramDialogDescription": "Pega el token que te dio @BotFather. Se comprueba con Telegram antes de guardarlo y no se vuelve a mostrar.",
+    "botTokenLabel": "Token del bot",
+    "telegramConnected": "{{label}} conectado",
+    "usingDeploymentBot": "Se usa el bot compartido de esta instalación hasta que conectes el tuyo.",
+    "driveTitle": "Google Drive",
+    "driveDescription": "El Drive al que el relay sube archivos. Te llevaremos a Google para aprobar el acceso.",
+    "driveConnected": "Google Drive conectado: {{label}}",
+    "driveFailed": "Google no completó la autorización.",
+    "waitingForConsent": "Esperando a que termines en la pestaña de Google…",
+    "usingDeploymentDrive": "Se usa el Drive compartido de esta instalación hasta que conectes el tuyo.",
+    "connectTelegram": "Conectar bot",
+    "connectDrive": "Conectar Drive",
+    "reconnect": "Reconectar",
+    "connect": "Conectar",
+    "cancel": "Cancelar",
+    "disconnected": "Desconectado",
+    "isolationNote": "Estas conexiones pertenecen solo a tu cuenta. Otros usuarios no pueden usarlas, y el relay solo actúa con las credenciales de la cuenta cuya clave de API o token OAuth hizo la petición."
+  }
 }

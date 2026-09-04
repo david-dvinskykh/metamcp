@@ -19,6 +19,7 @@ export const createAppRouter = (implementations: {
       mcpRequestAuditLogs: frontendRouters.mcpRequestAuditLogs,
       telegram: frontendRouters.telegram,
       instagram: frontendRouters.instagram,
+      fileRelay: frontendRouters.fileRelay,
     }),
   });
 };

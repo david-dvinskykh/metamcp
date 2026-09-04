@@ -475,8 +475,10 @@ describe("create_drive_upload_session", () => {
     expect(await stagedFileCount()).toBe(0);
   });
 
-  it("stays out of tools/list until Drive is configured", () => {
-    const withoutDrive = getFileRelayToolsForMcp().map((tool) => tool.name);
+  it("stays out of tools/list until Drive is configured", async () => {
+    const withoutDrive = (await getFileRelayToolsForMcp({})).map(
+      (tool) => tool.name,
+    );
     expect(withoutDrive).not.toContain(
       "metamcp-files__create_drive_upload_session",
     );
@@ -486,9 +488,9 @@ describe("create_drive_upload_session", () => {
     process.env.GOOGLE_DRIVE_CLIENT_SECRET = "client-secret";
     process.env.GOOGLE_DRIVE_REFRESH_TOKEN = "refresh-token";
 
-    expect(getFileRelayToolsForMcp().map((tool) => tool.name)).toContain(
-      "metamcp-files__create_drive_upload_session",
-    );
+    expect(
+      (await getFileRelayToolsForMcp({})).map((tool) => tool.name),
+    ).toContain("metamcp-files__create_drive_upload_session");
   });
 
   it("explains itself when Drive is not configured", async () => {
@@ -499,7 +501,7 @@ describe("create_drive_upload_session", () => {
     );
 
     expect(result.isError).toBe(true);
-    expect(firstText(result)).toContain("GOOGLE_DRIVE_CLIENT_ID");
+    expect(firstText(result)).toContain("Google Drive is not connected");
   });
 });
 

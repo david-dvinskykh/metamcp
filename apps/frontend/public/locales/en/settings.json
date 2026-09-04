@@ -51,5 +51,30 @@
   "resetToDefaults": "Reset to Defaults",
   "confirmReset": "Are you sure you want to reset all settings to their default values?",
   "resetConfirmation": "This action cannot be undone. All custom settings will be lost.",
-  "reset": "Reset"
+  "reset": "Reset",
+
+  "fileRelay": {
+    "title": "File relay connections",
+    "description": "Connect your own Telegram bot and Google Drive for the file relay tools.",
+    "telegramTitle": "Telegram bot",
+    "telegramDescription": "The bot the relay downloads files with. Create one with @BotFather and paste its token.",
+    "telegramDialogTitle": "Connect a Telegram bot",
+    "telegramDialogDescription": "Paste the token @BotFather gave you. It is checked with Telegram before it is saved, and is never shown again.",
+    "botTokenLabel": "Bot token",
+    "telegramConnected": "Connected {{label}}",
+    "usingDeploymentBot": "Using this deployment's shared bot until you connect your own.",
+    "driveTitle": "Google Drive",
+    "driveDescription": "The Drive the relay uploads files to. You will be sent to Google to approve access.",
+    "driveConnected": "Google Drive connected: {{label}}",
+    "driveFailed": "Google did not complete the authorization.",
+    "waitingForConsent": "Waiting for you to finish in the Google tab…",
+    "usingDeploymentDrive": "Using this deployment's shared Drive until you connect your own.",
+    "connectTelegram": "Connect bot",
+    "connectDrive": "Connect Drive",
+    "reconnect": "Reconnect",
+    "connect": "Connect",
+    "cancel": "Cancel",
+    "disconnected": "Disconnected",
+    "isolationNote": "These connections belong to your account only. Other users cannot use them, and the relay only acts with the credentials of the account whose API key or OAuth token made the request."
+  }
 }

@@ -8,10 +8,7 @@ import { createToolName } from "../metamcp/tool-name-parser";
 import { isFileRelayEnabled } from "./config";
 import { deliverStagedFile, DeliveryResult } from "./destinations";
 import { FileRelayError } from "./errors";
-import {
-  createDriveUploadSession,
-  isGoogleDriveConfigured,
-} from "./google-drive";
+import { createDriveUploadSession } from "./google-drive";
 import {
   CreateDriveUploadSessionInputSchema,
   DeliverFileInputSchema,
@@ -22,6 +19,7 @@ import {
 } from "./schemas";
 import { CallToolFn, resolveSource } from "./sources";
 import { StagedFile, stagingStore, summarizeStagedFile } from "./staging-store";
+import { hasGoogleDrive, RelayCaller } from "./user-credentials";
 
 export const FILE_RELAY_SERVER_PREFIX = "metamcp-files";
 
@@ -29,9 +27,16 @@ interface FileRelayToolDefinition {
   name: string;
   description: string;
   inputValidator: ZodTypeAny;
-  handler: (input: unknown, callTool: CallToolFn) => Promise<unknown>;
-  /** Omit the tool from tools/list when its backing service is unconfigured. */
-  isAvailable?: () => boolean;
+  handler: (
+    input: unknown,
+    callTool: CallToolFn,
+    caller: RelayCaller,
+  ) => Promise<unknown>;
+  /**
+   * Omit the tool from tools/list when the caller has nothing to back it.
+   * Resolved per caller, so a user without a Drive is not offered one.
+   */
+  isAvailable?: (caller: RelayCaller) => Promise<boolean> | boolean;
 }
 
 const RELAY_TOOLS: FileRelayToolDefinition[] = [
@@ -42,17 +47,18 @@ const RELAY_TOOLS: FileRelayToolDefinition[] = [
       "Use this instead of downloading a file with one tool and re-uploading it with another: only a short JSON summary comes back, so a 20 MB attachment costs a few tokens instead of tens of thousands. " +
       "Typical use: source {telegram:{fileId}} to destination {googleDrive:{folderId}}.",
     inputValidator: TransferFileInputSchema,
-    handler: async (input, callTool) => {
+    handler: async (input, callTool, caller) => {
       const parsed = TransferFileInputSchema.parse(input);
       assertNoRelayRecursion(parsed.source, parsed.destination);
 
-      const file = await resolveSource(parsed.source, callTool);
+      const file = await resolveSource(parsed.source, callTool, caller);
 
       try {
         const delivered = await deliverStagedFile(
           file,
           parsed.destination,
           callTool,
+          caller,
         );
         return buildTransferReport(file, delivered, parsed.keepStaged);
       } finally {
@@ -68,11 +74,11 @@ const RELAY_TOOLS: FileRelayToolDefinition[] = [
       "Download a file into MetaMCP's server-side staging area and return only its metadata (handle, name, MIME type, size, sha256). " +
       "The bytes stay on the server; pass the handle to metamcp-files__deliver_file to send them on. Staged files expire automatically.",
     inputValidator: StageFileInputSchema,
-    handler: async (input, callTool) => {
+    handler: async (input, callTool, caller) => {
       const parsed = StageFileInputSchema.parse(input);
       assertNoRelayRecursion(parsed.source);
 
-      const file = await resolveSource(parsed.source, callTool);
+      const file = await resolveSource(parsed.source, callTool, caller);
       return { staged: summarizeStagedFile(file) };
     },
   },
@@ -81,7 +87,7 @@ const RELAY_TOOLS: FileRelayToolDefinition[] = [
     description:
       "Send an already staged file (see metamcp-files__stage_file) to a destination. The staged copy is discarded afterwards unless keepStaged is true.",
     inputValidator: DeliverFileInputSchema,
-    handler: async (input, callTool) => {
+    handler: async (input, callTool, caller) => {
       const parsed = DeliverFileInputSchema.parse(input);
       assertNoRelayRecursion(undefined, parsed.destination);
 
@@ -92,6 +98,7 @@ const RELAY_TOOLS: FileRelayToolDefinition[] = [
           file,
           parsed.destination,
           callTool,
+          caller,
         );
         return buildTransferReport(file, delivered, parsed.keepStaged);
       } finally {
@@ -110,10 +117,10 @@ const RELAY_TOOLS: FileRelayToolDefinition[] = [
       "The bytes go straight to Google - they never pass through this conversation or through MetaMCP. " +
       "The session URI is a single-use, file-scoped credential (roughly a week's life) and needs no Authorization header, so no long-lived secret is exposed.",
     inputValidator: CreateDriveUploadSessionInputSchema,
-    isAvailable: isGoogleDriveConfigured,
-    handler: async (input) => {
+    isAvailable: hasGoogleDrive,
+    handler: async (input, _callTool, caller) => {
       const parsed = CreateDriveUploadSessionInputSchema.parse(input);
-      const session = await createDriveUploadSession(parsed);
+      const session = await createDriveUploadSession(parsed, caller);
 
       return {
         ok: true,
@@ -181,18 +188,31 @@ export function isFileRelayToolName(toolName: string): boolean {
   return toolName.startsWith(`${FILE_RELAY_SERVER_PREFIX}__`);
 }
 
-/** Tool definitions to append to a namespace's tools/list response. */
-export function getFileRelayToolsForMcp(): Tool[] {
+/**
+ * Tool definitions to append to a namespace's tools/list response.
+ *
+ * Availability is decided per caller: a user who has connected no Drive is not
+ * shown the Drive tool, and the transfer hint reflects their own connection
+ * rather than the deployment's.
+ */
+export async function getFileRelayToolsForMcp(
+  caller: RelayCaller = {},
+): Promise<Tool[]> {
   if (!isFileRelayEnabled()) {
     return [];
   }
 
-  const driveHint = isGoogleDriveConfigured()
-    ? " Google Drive is configured on this server, so destination {googleDrive:{...}} works out of the box."
+  const driveReady = await hasGoogleDrive(caller);
+  const driveHint = driveReady
+    ? " Google Drive is connected for this account, so destination {googleDrive:{...}} works out of the box."
     : "";
 
-  return RELAY_TOOLS.filter((tool) => tool.isAvailable?.() ?? true).map(
-    (tool) => ({
+  const tools: Tool[] = [];
+  for (const tool of RELAY_TOOLS) {
+    if (tool.isAvailable && !(await tool.isAvailable(caller))) {
+      continue;
+    }
+    tools.push({
       name: getExposedFileRelayToolName(tool.name),
       description:
         tool.name === "transfer_file"
@@ -201,14 +221,16 @@ export function getFileRelayToolsForMcp(): Tool[] {
       inputSchema: zodToMcpInputSchema(
         tool.inputValidator,
       ) as Tool["inputSchema"],
-    }),
-  );
+    });
+  }
+  return tools;
 }
 
 export async function executeFileRelayTool(
   exposedToolName: string,
   rawArgs: unknown,
   callTool: CallToolFn,
+  caller: RelayCaller = {},
 ): Promise<CallToolResult> {
   const bareName = isFileRelayToolName(exposedToolName)
     ? exposedToolName.slice(FILE_RELAY_SERVER_PREFIX.length + 2)
@@ -227,7 +249,7 @@ export async function executeFileRelayTool(
   }
 
   try {
-    const result = await tool.handler(rawArgs ?? {}, callTool);
+    const result = await tool.handler(rawArgs ?? {}, callTool, caller);
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     };

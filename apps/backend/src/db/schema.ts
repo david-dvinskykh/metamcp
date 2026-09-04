@@ -596,3 +596,53 @@ export const oauthAccessTokensTable = pgTable(
     index("oauth_access_tokens_refresh_token_idx").on(table.refresh_token),
   ],
 );
+
+/**
+ * Per-user credentials the file relay uses on that user's behalf.
+ *
+ * The relay moves files between services, so it needs a Telegram bot token or
+ * Google Drive grant to act with. Holding them per user is what keeps one
+ * user's caller from reaching another's Drive: a relay call resolves the
+ * credential from the identity that authenticated the request, and no identity
+ * means no credential.
+ */
+export const fileRelayProviderEnum = pgEnum("file_relay_provider", [
+  "TELEGRAM_BOT",
+  "GOOGLE_DRIVE",
+]);
+
+export const fileRelayCredentialsTable = pgTable(
+  "file_relay_credentials",
+  {
+    uuid: uuid("uuid").primaryKey().defaultRandom(),
+    user_id: text("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    provider: fileRelayProviderEnum("provider").notNull(),
+    /**
+     * Provider-shaped secret material: a bot token, or a refresh token with
+     * the client it was issued to. Never serialized to the frontend — only the
+     * label and the connected-at timestamp are.
+     */
+    payload: jsonb("payload")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    /** Human-readable identity of the connection, e.g. "@mybot" or an email. */
+    label: text("label"),
+    created_at: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("file_relay_credentials_user_id_idx").on(table.user_id),
+    // One connection per provider per user: connecting again replaces it.
+    unique("file_relay_credentials_user_provider_idx").on(
+      table.user_id,
+      table.provider,
+    ),
+  ],
+);

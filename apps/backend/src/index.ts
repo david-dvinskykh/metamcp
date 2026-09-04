@@ -2,6 +2,7 @@ import express from "express";
 
 import { auth } from "./auth";
 import { initializeIdleServers, initializeOnStartup } from "./lib/startup";
+import fileRelayRouter from "./routers/file-relay";
 import mcpProxyRouter from "./routers/mcp-proxy";
 import oauthRouter from "./routers/oauth";
 import publicEndpointsRouter from "./routers/public-metamcp";
@@ -82,6 +83,10 @@ app.use("/mcp-proxy", mcpProxyRouter);
 
 // Mount tRPC routes
 app.use("/trpc", trpcRouter);
+
+// Mount the file relay's public OAuth callback (Google redirects a browser
+// here; the account is identified by the single-use state, not by a session)
+app.use("/file-relay", fileRelayRouter);
 
 async function start(): Promise<void> {
   // Startup initialization (must run after DB is reachable/migrations are applied, and before listening)

@@ -59,6 +59,8 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith("/trpc") ||
     pathname.startsWith("/mcp-proxy") ||
     pathname.startsWith("/metamcp") ||
+    // Google redirects the browser to the file relay callback with no session
+    pathname.startsWith("/file-relay") ||
     pathname.startsWith("/oauth") ||
     pathname.startsWith("/.well-known") ||
     pathname.startsWith("/service") ||
@@ -137,6 +139,6 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: [
     // Skip all internal paths (_next, etc.)
-    "/((?!_next|api/|trpc|mcp-proxy|metamcp|oauth|fe-oauth|\\.well-known|service|health|.*\\..*).*)",
+    "/((?!_next|api/|trpc|mcp-proxy|metamcp|file-relay|oauth|fe-oauth|\\.well-known|service|health|.*\\..*).*)",
   ],
 };

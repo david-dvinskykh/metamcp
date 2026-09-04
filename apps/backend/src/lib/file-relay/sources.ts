@@ -8,13 +8,13 @@ import {
   getLocalPathRoots,
   getMaxFileBytes,
   getTelegramApiBase,
-  getTelegramBotToken,
 } from "./config";
 import { FileRelayError } from "./errors";
 import { downloadToStaging } from "./http-download";
 import { SourceInput, ToolSourceInput } from "./schemas";
 import { StagedFile, stagingStore } from "./staging-store";
 import { getAtPath, interpolateDeep, TemplateVars } from "./templating";
+import { RelayCaller, resolveTelegramBotToken } from "./user-credentials";
 
 export type CallToolFn = (
   name: string,
@@ -50,6 +50,7 @@ const DATA_URL = /^data:([^;,]+)?(;base64)?,(.*)$/s;
 export async function resolveSource(
   source: SourceInput,
   callTool: CallToolFn,
+  caller: RelayCaller,
 ): Promise<StagedFile> {
   const selected = [
     source.telegram ? "telegram" : undefined,
@@ -64,7 +65,7 @@ export async function resolveSource(
   }
 
   if (source.telegram) {
-    return stageFromTelegram(source.telegram);
+    return stageFromTelegram(source.telegram, caller);
   }
 
   if (source.url) {
@@ -99,15 +100,19 @@ function safeHost(rawUrl: string): string {
  * passes the file_id it already saw in the message metadata, and the bytes go
  * Telegram to MetaMCP to the destination.
  */
-export async function stageFromTelegram(spec: {
-  fileId: string;
-  fileName?: string;
-  mimeType?: string;
-}): Promise<StagedFile> {
-  const token = getTelegramBotToken();
+export async function stageFromTelegram(
+  spec: {
+    fileId: string;
+    fileName?: string;
+    mimeType?: string;
+  },
+  caller: RelayCaller,
+): Promise<StagedFile> {
+  const resolved = await resolveTelegramBotToken(caller);
+  const token = resolved?.token;
   if (!token) {
     throw new FileRelayError(
-      "TELEGRAM_BOT_TOKEN is not configured on the MetaMCP server, so telegram sources are unavailable.",
+      "No Telegram bot is connected for this account, so telegram sources are unavailable. Connect one under Settings, or have the operator set TELEGRAM_BOT_TOKEN.",
     );
   }
 

@@ -45,6 +45,11 @@ const nextConfig = {
         source: "/metamcp/:path*",
         destination: `${backendUrl}/metamcp/:path*`,
       },
+      // File relay callbacks (Google Drive consent redirect)
+      {
+        source: "/file-relay/:path*",
+        destination: `${backendUrl}/file-relay/:path*`,
+      },
       {
         source: "/service/:path*",
         destination: "https://metatool-service.jczstudio.workers.dev/:path*",

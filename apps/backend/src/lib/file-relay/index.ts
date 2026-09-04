@@ -6,3 +6,4 @@ export * from "./schemas";
 export * from "./sources";
 export * from "./staging-store";
 export * from "./tools-registry";
+export * from "./user-credentials";

@@ -7,6 +7,7 @@ import { DestinationInput, ToolDestinationInput } from "./schemas";
 import { CallToolFn } from "./sources";
 import { StagedFile, stagingStore } from "./staging-store";
 import { buildTemplateVars, interpolateDeep, setAtPath } from "./templating";
+import { RelayCaller } from "./user-credentials";
 
 export type DeliveryResult =
   | { kind: "googleDrive"; googleDrive: DriveUploadResult }
@@ -16,6 +17,7 @@ export async function deliverStagedFile(
   file: StagedFile,
   destination: DestinationInput,
   callTool: CallToolFn,
+  caller: RelayCaller,
 ): Promise<DeliveryResult> {
   const selected = [
     destination.googleDrive ? "googleDrive" : undefined,
@@ -31,7 +33,11 @@ export async function deliverStagedFile(
   if (destination.googleDrive) {
     return {
       kind: "googleDrive",
-      googleDrive: await uploadStagedFileToDrive(file, destination.googleDrive),
+      googleDrive: await uploadStagedFileToDrive(
+        file,
+        destination.googleDrive,
+        caller,
+      ),
     };
   }
 

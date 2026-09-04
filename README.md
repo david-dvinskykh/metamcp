@@ -475,11 +475,46 @@ and audit logging apply exactly as they would to a direct call.
 | `GOOGLE_DRIVE_SUBJECT` | – | User to impersonate with a domain-wide-delegation service account. |
 | `GOOGLE_DRIVE_SCOPE` | `…/auth/drive.file` | Scope requested for service-account credentials. |
 | `GOOGLE_DRIVE_DEFAULT_FOLDER_ID` | – | Folder used when a Drive destination does not name one. |
+| `GOOGLE_DRIVE_REDIRECT_URI` | `$APP_URL/file-relay/google/callback` | Redirect registered on the OAuth client for the per-user **Connect Drive** button. |
+
+### 👤 Per-user connections
+
+Everything in the table above is **deployment-wide**: those credentials belong to the
+operator, and a request uses them only when the account behind it has connected nothing of
+its own.
+
+Each user can instead connect their own Telegram bot and their own Google Drive under
+**Settings → File relay connections**:
+
+- **Connect bot** — paste a token from [@BotFather](https://t.me/BotFather). MetaMCP verifies
+  it against the Bot API before storing it and shows the bot's `@username`.
+- **Connect Drive** — sends the user to Google's consent screen and stores the refresh token
+  that comes back. This button needs `GOOGLE_DRIVE_CLIENT_ID` and
+  `GOOGLE_DRIVE_CLIENT_SECRET` (the OAuth *client* is the operator's; each user's *grant* is
+  their own), with `$APP_URL/file-relay/google/callback` registered as an authorized redirect
+  URI.
+
+**One user can never use another's credentials or authorized tools.** The relay acts strictly
+as the account whose API key or OAuth token authenticated the MCP session:
+
+- Credentials are read and written only by user id — there is no lookup that returns a row
+  without one.
+- Access tokens are cached per credential, so a token minted for one Drive grant is never
+  served to another.
+- A public endpoint (`enable_auth` off) has no owner, so it gets **no** user credentials at
+  all rather than inheriting somebody's; it can still use the deployment-wide ones.
+- `tools/list` is resolved per caller: a user with no Drive is not offered the Drive tool.
+- The Google callback is public by necessity (Google redirects a browser to it), so the
+  account is decided by a single-use, ten-minute, 256-bit `state` bound to the user who
+  pressed Connect — never by anything in the request.
+- Secrets are write-only from the browser's point of view: the settings page only ever
+  receives a label and a timestamp.
 
 ### 🔑 Connecting Google Drive
 
-The relay talks to the Drive REST API with the deployment's own credentials, so there is
-nothing to authorise per request. Pick one of the two credential types.
+This section sets up the **deployment-wide** Drive — the fallback for accounts that have not
+connected one of their own (see *Per-user connections* above). Pick one of the two credential
+types.
 
 **Personal account / Gmail — OAuth refresh token (recommended):**
 

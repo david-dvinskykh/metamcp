@@ -51,5 +51,30 @@
   "resetToDefaults": "重置为默认值",
   "confirmReset": "您确定要将所有设置重置为默认值吗？",
   "resetConfirmation": "此操作无法撤消。所有自定义设置都将丢失。",
-  "reset": "重置"
+  "reset": "重置",
+
+  "fileRelay": {
+    "title": "文件中继连接",
+    "description": "为文件中继工具连接你自己的 Telegram 机器人和 Google 云端硬盘。",
+    "telegramTitle": "Telegram 机器人",
+    "telegramDescription": "中继用于下载文件的机器人。用 @BotFather 创建一个并粘贴它的令牌。",
+    "telegramDialogTitle": "连接 Telegram 机器人",
+    "telegramDialogDescription": "粘贴 @BotFather 给你的令牌。保存前会先向 Telegram 验证，之后不会再次显示。",
+    "botTokenLabel": "机器人令牌",
+    "telegramConnected": "已连接 {{label}}",
+    "usingDeploymentBot": "在你连接自己的机器人之前，将使用本部署的共享机器人。",
+    "driveTitle": "Google 云端硬盘",
+    "driveDescription": "中继上传文件的目标云端硬盘。你将被带到 Google 授权访问。",
+    "driveConnected": "已连接 Google 云端硬盘：{{label}}",
+    "driveFailed": "Google 未完成授权。",
+    "waitingForConsent": "等待你在 Google 标签页中完成授权…",
+    "usingDeploymentDrive": "在你连接自己的云端硬盘之前，将使用本部署的共享云端硬盘。",
+    "connectTelegram": "连接机器人",
+    "connectDrive": "连接云端硬盘",
+    "reconnect": "重新连接",
+    "connect": "连接",
+    "cancel": "取消",
+    "disconnected": "已断开连接",
+    "isolationNote": "这些连接仅属于你的账户。其他用户无法使用它们；中继只会使用发起请求的 API 密钥或 OAuth 令牌所属账户的凭据。"
+  }
 }

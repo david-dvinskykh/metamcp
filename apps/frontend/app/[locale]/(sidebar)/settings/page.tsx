@@ -20,6 +20,8 @@ import { Switch } from "@/components/ui/switch";
 import { useTranslations } from "@/hooks/useTranslations";
 import { trpc } from "@/lib/trpc";
 
+import { FileRelayConnections } from "./file-relay-connections";
+
 export default function SettingsPage() {
   const { t } = useTranslations();
   const [isSignupDisabled, setIsSignupDisabled] = useState(false);
@@ -682,6 +684,10 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
       </form>
+
+      {/* Outside the settings form: these connections save themselves, and a
+          nested form would submit the wrong thing. */}
+      <FileRelayConnections />
     </div>
   );
 }
