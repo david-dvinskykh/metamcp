@@ -49,9 +49,16 @@ ARG PNPM_VERSION=10.29.3
 # версию сервера.
 ARG TELEGRAM_MCP_COMMIT=7ea0adc8d0535e8dae02d07587d44321cca0db09
 
-# n24q02m/better-telegram-mcp. Пакет требует ровно Python 3.13
+# david-dvinskykh/better-telegram-mcp — форк, а не PyPI-релиз n24q02m: именно
+# его звал конфиг сервера в MetaMCP (`uvx --from git+...@main`), и в нём есть
+# правки, которых в PyPI нет. Пакет требует ровно Python 3.13
 # (Requires-Python ==3.13.*) — системный python3 в trixie как раз 3.13.
-ARG BETTER_TELEGRAM_MCP_VERSION=4.17.0
+#
+# Коммит запинен, как и у всех остальных компонентов этого файла: `@main`
+# менял сервер молча при каждом пересоздании контейнера. Обновление — правкой
+# этого ARG.
+ARG BETTER_TELEGRAM_MCP_REPO=https://github.com/david-dvinskykh/better-telegram-mcp
+ARG BETTER_TELEGRAM_MCP_COMMIT=e742a7e106e7e56a3baeca23832be424dee42576
 
 # modelcontextprotocol/servers, пакет mcp-server-fetch. Ставится в образ, чтобы
 # конфиг сервера в MetaMCP звал готовую консольную команду вместо `uvx`.
@@ -439,7 +446,8 @@ RUN set -eux; \
 FROM metamcp-${METAMCP_BASE} AS runner
 
 ARG TELEGRAM_MCP_COMMIT
-ARG BETTER_TELEGRAM_MCP_VERSION
+ARG BETTER_TELEGRAM_MCP_REPO
+ARG BETTER_TELEGRAM_MCP_COMMIT
 ARG MCP_SERVER_FETCH_VERSION
 ARG INSTAGRAM_DM_VERSION
 ARG ZENMONEY_NPM_VERSION
@@ -503,11 +511,12 @@ ENV UV_TOOL_DIR=/opt/uv-tools \
 RUN set -eux; \
     UV_PYTHON_DOWNLOADS=never uv tool install --python /usr/bin/python3 \
       --with "mcp[cli]<2.0" \
-      "better-telegram-mcp==${BETTER_TELEGRAM_MCP_VERSION}"; \
+      "better-telegram-mcp @ git+${BETTER_TELEGRAM_MCP_REPO}@${BETTER_TELEGRAM_MCP_COMMIT}"; \
     chown -R nextjs:nodejs /opt/uv-tools "${UV_CACHE_DIR}"; \
     command -v better-telegram-mcp; \
-    py="$(ls -d /opt/uv-tools/*/bin/python | head -1)"; \
-    test -n "${py}"; \
+    head -1 /usr/local/bin/better-telegram-mcp | grep -q '^#!/opt/uv-tools/'; \
+    py=/opt/uv-tools/better-telegram-mcp/bin/python; \
+    test -x "${py}"; \
     "${py}" -c "import better_telegram_mcp, mcp.server.fastmcp"; \
     "${py}" -c "import importlib.metadata as m; v=m.version('mcp'); assert int(v.split('.')[0]) < 2, v; print('mcp', v)"
 
