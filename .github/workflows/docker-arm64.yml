@@ -215,7 +215,10 @@ jobs:
 
           test "$(docker image inspect --format '{{.Architecture}}' "$IMAGE")" = "arm64"
 
-          docker run --rm -e LIGHTPANDA_EXPECTED --entrypoint /bin/sh "$IMAGE" -euxc '
+          # -e VAR="$VAR", а не -e VAR: голая форма берёт значение из окружения
+          # процесса docker, а обычная переменная шага туда не попадает —
+          # внутри контейнера под set -u она разворачивается в ошибку.
+          docker run --rm -e LIGHTPANDA_EXPECTED="$LIGHTPANDA_EXPECTED" --entrypoint /bin/sh "$IMAGE" -euxc '
             test "$(uname -m)" = "aarch64"
             command -v telegram-mcp
             command -v mcp-instagram-dm
