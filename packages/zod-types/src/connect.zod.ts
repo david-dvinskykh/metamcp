@@ -81,7 +81,7 @@ export const ConnectExecuteRequestSchema = z.object({
   toolName: z.string(),
   // Arguments for the tool call, already assembled by the client
   // (targetArg + fieldsArg, or the tool's own inputSchema properties).
-  arguments: z.record(z.any()).default({}),
+  arguments: z.record(z.string(), z.any()).default({}),
 });
 export type ConnectExecuteRequest = z.infer<
   typeof ConnectExecuteRequestSchema
