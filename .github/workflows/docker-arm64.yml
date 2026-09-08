@@ -229,6 +229,7 @@ jobs:
             command -v better-telegram-mcp
             command -v mcp-server-fetch
             command -v curl-mcp
+            command -v receipts-mcp
             command -v portainer-mcp
             command -v lightpanda
             command -v lightpanda-mcp
@@ -260,6 +261,10 @@ jobs:
             command -v curl
             curl-mcp --version
             test -w /var/lib/curl-mcp/downloads
+            # receipts-mcp — Go-бинарник, stdio по умолчанию; хранилище учёток
+            # должно быть записываемым, иначе шифрованный файл ключей не создать
+            receipts-mcp -version
+            test -w /var/lib/receipts-mcp
             node /usr/local/lib/zenmoney-mcp-ddvin/build/index.js --help >/dev/null 2>&1 || true
             test -f /usr/local/lib/zenmoney-mcp-ddvin/build/index.js
             test -f /usr/local/lib/gocardless-mcp/build/index.js
@@ -298,6 +303,19 @@ jobs:
           grep -q '"gocardless-bank-account-data"' /tmp/gc.out
           grep -q '"connect_bank"' /tmp/gc.out
           grep -q '"get_account_transactions"' /tmp/gc.out
+
+          # receipts-mcp: stdio-сервер выгрузки чеков. Секреты не в окружении —
+          # он поднимается и без учёток, поэтому гоняем полный handshake и
+          # проверяем, что объявлены его инструменты входа и выгрузки.
+          docker run --rm -i --entrypoint receipts-mcp "$IMAGE" > /tmp/rc.out <<'JSONRPC' || true
+          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}
+          {"jsonrpc":"2.0","method":"notifications/initialized"}
+          {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+          JSONRPC
+          head -c 300 /tmp/rc.out
+          grep -q '"receipts_providers"' /tmp/rc.out
+          grep -q '"receipts_login"' /tmp/rc.out
+          grep -q '"receipts_list"' /tmp/rc.out
 
           # lightpanda-mcp — тот же случай: `command -v` не проверяет ни
           # динамические зависимости бинарника (нужен GLIBC_2.34), ни то, что
