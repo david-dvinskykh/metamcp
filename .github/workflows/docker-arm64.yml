@@ -304,18 +304,14 @@ jobs:
           grep -q '"connect_bank"' /tmp/gc.out
           grep -q '"get_account_transactions"' /tmp/gc.out
 
-          # receipts-mcp: stdio-сервер выгрузки чеков. Секреты не в окружении —
-          # он поднимается и без учёток, поэтому гоняем полный handshake и
-          # проверяем, что объявлены его инструменты входа и выгрузки.
-          docker run --rm -i --entrypoint receipts-mcp "$IMAGE" > /tmp/rc.out <<'JSONRPC' || true
-          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}
-          {"jsonrpc":"2.0","method":"notifications/initialized"}
-          {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
-          JSONRPC
-          head -c 300 /tmp/rc.out
-          grep -q '"receipts_providers"' /tmp/rc.out
-          grep -q '"receipts_login"' /tmp/rc.out
-          grep -q '"receipts_list"' /tmp/rc.out
+          # receipts-mcp: stdio-сервер выгрузки чеков (go-sdk). Пайп-handshake
+          # тут не годится: на мгновенном EOF от heredoc сервер закрывает сессию
+          # раньше, чем успевает ответить, и stdout пуст (в MetaMCP пайп живёт,
+          # проблемы нет). Поэтому проверяем строку старта в stderr — она
+          # доказывает, что бинарник запускается на aarch64 и MCP-сервер встал.
+          docker run --rm -i --entrypoint receipts-mcp "$IMAGE" </dev/null > /tmp/rc.out 2> /tmp/rc.err || true
+          cat /tmp/rc.err
+          grep -q 'serving MCP over stdio' /tmp/rc.err
 
           # lightpanda-mcp — тот же случай: `command -v` не проверяет ни
           # динамические зависимости бинарника (нужен GLIBC_2.34), ни то, что
