@@ -13,6 +13,8 @@
 #   gocardless-mcp     — david-dvinskykh/GoCardless-Bank-Accaunt-Data-MCP,
 #                        сборка по package-lock.json
 #   portainer-mcp      — strnad/portainer-mcp v0.6.1, Go-бинарник из релизов
+#   receipts-mcp       — david-dvinskykh/recipt-fetcher-mcp, Go, выгрузка чеков
+#                        (Lidl/Action/Allegro), сборка из исходников
 #   lightpanda-mcp     — lightpanda-io/browser 0.3.7, встроенный MCP-режим
 #   metamcp-admin      — НЕ ВКЛЮЧЁН: репозиторий удалён с GitHub, см. блок ниже
 #
@@ -75,6 +77,13 @@ ARG MCP_SERVER_FETCH_VERSION=2026.8.18
 # автобамп (scripts/bump_pins.py) по main репозитория, а не рука.
 ARG CURL_MCP_REPO=https://github.com/david-dvinskykh/curl-mcp
 ARG CURL_MCP_COMMIT=40b1d2676cc7a6b72ff1247fc27224a1607a4f68
+
+# david-dvinskykh/recipt-fetcher-mcp — MCP-сервер выгрузки чеков из Lidl, Action
+# и Allegro для категоризации трат. Go, stdio по умолчанию. Тегов и пакета нет,
+# ветка движется — пин по коммиту, как у curl-mcp; двигает его ночной автобамп
+# (scripts/bump_pins.py) по main репозитория, а не рука.
+ARG RECEIPTS_MCP_REPO=https://github.com/david-dvinskykh/recipt-fetcher-mcp
+ARG RECEIPTS_MCP_COMMIT=bb7159bd79eaa3fb458e39b92faa482571ee2a2a
 
 ARG INSTAGRAM_DM_VERSION=2.1.1
 ARG ZENMONEY_NPM_VERSION=0.3.1
@@ -478,6 +487,37 @@ RUN set -eux; \
     test -x /out/curl-mcp
 
 # ===========================================================================
+# receipts-mcp-builder — MCP-сервер выгрузки чеков, сборка из исходников на Go
+# ===========================================================================
+#
+# Тот же приём, что и у curl-mcp: стадия на BUILDPLATFORM, GOARCH из TARGETARCH,
+# Go кросс-компилирует сам, CGO не нужен (chromedp дёргает браузер по CDP, а не
+# линкуется с ним). go.mod требует Go 1.26 — отсюда образ golang:1.26.
+#
+# TARGETARCH проставляет только BuildKit — см. комментарий в portainer-fetcher;
+# при классическом сборщике переменная пуста, и тогда GOARCH не задаётся, а Go
+# собирает под архитектуру самого раннера.
+#
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.26-trixie AS receipts-mcp-builder
+
+ARG RECEIPTS_MCP_REPO
+ARG RECEIPTS_MCP_COMMIT
+ARG TARGETARCH=""
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "${RECEIPTS_MCP_REPO}"; \
+    git fetch -q --depth 1 origin "${RECEIPTS_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -ldflags "-s -w -X main.version=${RECEIPTS_MCP_COMMIT}" \
+      -o /out/receipts-mcp ./cmd/receipts-mcp; \
+    test -x /out/receipts-mcp
+
+# ===========================================================================
 # runner — итоговый образ поверх выбранного варианта MetaMCP
 # ===========================================================================
 #
@@ -613,6 +653,17 @@ COPY --from=gocardless-builder --chown=1001:1001 /src /usr/local/lib/gocardless-
 # CURL_MCP_TIMEOUT_SECONDS, CURL_MCP_ALLOW_RAW=0 убирает сырой режим.
 COPY --from=curl-mcp-builder /out/curl-mcp /usr/local/lib/curl-mcp/curl-mcp
 
+# --- receipts-mcp ---------------------------------------------------------
+#
+# В конфигурации сервера в MetaMCP: команда `receipts-mcp`, без аргументов
+# (дефолт — stdio; флаг --http нужен только для отдельного веб-логина, который
+# в составе MetaMCP не используется). Инструменты выгружают чеки из Lidl, Action
+# и Allegro и ведут вход в аккаунты; секреты сервер не принимает в окружении, а
+# хранит сам — зашифрованный AES-256-GCM файл в RECEIPTS_STATE_DIR, ключ рядом
+# (0600). Каталог делаем записываемым и кладём под том, иначе учётки теряются
+# при каждом пересоздании контейнера.
+COPY --from=receipts-mcp-builder /out/receipts-mcp /usr/local/lib/receipts-mcp/receipts-mcp
+
 # --- lightpanda -----------------------------------------------------------
 COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpanda
 
@@ -647,8 +698,8 @@ COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpa
 # конфигурации сервера, если телеметрию захочется вернуть.
 #
 RUN set -eux; \
-    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp/downloads; \
-    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp; \
+    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp/downloads /var/lib/receipts-mcp; \
+    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp /var/lib/receipts-mcp; \
     \
     printf '%s\n' \
       '#!/bin/sh' \
@@ -700,6 +751,14 @@ RUN set -eux; \
     printf '%s\n' \
       '#!/bin/sh' \
       'set -e' \
+      'export RECEIPTS_STATE_DIR="${RECEIPTS_STATE_DIR:-/var/lib/receipts-mcp}"' \
+      'cd /var/lib/receipts-mcp' \
+      'exec /usr/local/lib/receipts-mcp/receipts-mcp "$@"' \
+      > /usr/local/bin/receipts-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
       'export LIGHTPANDA_DISABLE_TELEMETRY="${LIGHTPANDA_DISABLE_TELEMETRY:-true}"' \
       'cd /var/lib/lightpanda' \
       'exec /usr/local/lib/lightpanda/lightpanda "$@"' \
@@ -718,6 +777,7 @@ RUN set -eux; \
       /usr/local/bin/one-zenwallet-mcp \
       /usr/local/bin/gocardless-mcp \
       /usr/local/bin/curl-mcp \
+      /usr/local/bin/receipts-mcp \
       /usr/local/bin/lightpanda \
       /usr/local/bin/lightpanda-mcp
 
@@ -749,7 +809,7 @@ USER nextjs
 
 EXPOSE 12008
 
-VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp", "/var/lib/gocardless-mcp"]
+VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp", "/var/lib/gocardless-mcp", "/var/lib/receipts-mcp"]
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:12008/health || exit 1
