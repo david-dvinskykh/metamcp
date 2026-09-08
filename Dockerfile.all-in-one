@@ -66,6 +66,19 @@ ARG BETTER_TELEGRAM_MCP_COMMIT=e742a7e106e7e56a3baeca23832be424dee42576
 # ей не нужен.
 ARG MCP_SERVER_FETCH_VERSION=2026.8.18
 
+# curl-mcp — обёртка над самим бинарником curl: mcp-server-fetch умеет только
+# GET со сведением страницы в markdown, а этот сервер даёт POST, PUT, PATCH,
+# DELETE и произвольные заголовки, тело, авторизацию, прокси и unix-сокет.
+# Собирается из исходников: релизов и пакета в npm/PyPI у него нет.
+#
+# Коммит запинен так же, как у остальных компонентов, но ночной автобамп его
+# пока НЕ двигает: сервер живёт на ветке claude/wonderful-darwin-p3jtw7, а на
+# main репозитория лежит только начальный README. Как ветка вольётся в main —
+# включить пин по инструкции в scripts/bump_pins.py, иначе автобамп откатит
+# коммит на пустой и сервер исчезнет из образа.
+ARG CURL_MCP_REPO=https://github.com/david-dvinskykh/curl-mcp
+ARG CURL_MCP_COMMIT=40b1d2676cc7a6b72ff1247fc27224a1607a4f68
+
 ARG INSTAGRAM_DM_VERSION=2.1.1
 ARG ZENMONEY_NPM_VERSION=0.3.1
 # 0.6.0 @ 2026-08-22 «Merge reminder tools with the edit/debt line» — к
@@ -436,6 +449,38 @@ RUN set -eux; \
     rm -rf .git src test .github
 
 # ===========================================================================
+# curl-mcp-builder — MCP-обёртка над curl, сборка из исходников на Go
+# ===========================================================================
+#
+# Стадия закреплена на BUILDPLATFORM, а GOARCH берётся из TARGETARCH: иначе
+# при сборке arm64-образа на amd64-раннере компилятор шёл бы через QEMU и
+# стоил бы минуты вместо секунд. Go кросс-компилирует сам, CGO не нужен.
+#
+# TARGETARCH проставляет только BuildKit — см. комментарий в portainer-fetcher;
+# при классическом сборщике переменная пуста, и тогда GOARCH не задаётся, а Go
+# собирает под архитектуру самого раннера. Это верно ровно для случая, когда
+# сборщик и цель совпадают, — а классический сборщик иначе и не умеет.
+#
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.25-trixie AS curl-mcp-builder
+
+ARG CURL_MCP_REPO
+ARG CURL_MCP_COMMIT
+ARG TARGETARCH=""
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "${CURL_MCP_REPO}"; \
+    git fetch -q --depth 1 origin "${CURL_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -ldflags "-s -w -X main.version=${CURL_MCP_COMMIT}" \
+      -o /out/curl-mcp .; \
+    test -x /out/curl-mcp
+
+# ===========================================================================
 # runner — итоговый образ поверх выбранного варианта MetaMCP
 # ===========================================================================
 #
@@ -456,7 +501,7 @@ USER root
 WORKDIR /app
 
 LABEL org.opencontainers.image.source="https://github.com/david-dvinskykh/metamcp"
-LABEL org.opencontainers.image.description="MetaMCP с предустановленными telegram, instagram, zenmoney, one-zenwallet, gocardless, portainer и lightpanda MCP"
+LABEL org.opencontainers.image.description="MetaMCP с предустановленными telegram, instagram, zenmoney, one-zenwallet, gocardless, portainer, curl и lightpanda MCP"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="MetaMCP custom"
 
@@ -469,9 +514,13 @@ LABEL org.opencontainers.image.title="MetaMCP custom"
 # вреден — MCP-серверу, добавленному через UI (`uvx ...`) и требующему другую
 # версию Python, нужно уметь её скачать. Каталог uv для этого есть и доступен
 # на запись: /home/nextjs/.local/share/uv/python.
+#
+# curl нужен curl-mcp: сервер не реализует HTTP сам, а зовёт бинарник. В
+# стадии base он уже стоит, но при METAMCP_BASE=prebuilt runner наследуется от
+# чужого образа, где его может не быть, — поэтому ставим здесь явно.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends python3; \
+    apt-get install -y --no-install-recommends python3 curl; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
@@ -559,6 +608,14 @@ COPY --from=one-zenwallet-builder --chown=1001:1001 /out /usr/local/lib/one-zenw
 # раздел Developers → User secrets). Всё остальное у сервера с умолчаниями.
 COPY --from=gocardless-builder --chown=1001:1001 /src /usr/local/lib/gocardless-mcp
 
+# --- curl-mcp -------------------------------------------------------------
+#
+# В конфигурации сервера в MetaMCP: команда `curl-mcp`, без аргументов.
+# Инструменты: curl_request (любой метод), curl_download, curl_raw и
+# curl_version. Ограничения правятся окружением — CURL_MCP_MAX_RESPONSE_BYTES,
+# CURL_MCP_TIMEOUT_SECONDS, CURL_MCP_ALLOW_RAW=0 убирает сырой режим.
+COPY --from=curl-mcp-builder /out/curl-mcp /usr/local/lib/curl-mcp/curl-mcp
+
 # --- lightpanda -----------------------------------------------------------
 COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpanda
 
@@ -593,8 +650,8 @@ COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpa
 # конфигурации сервера, если телеметрию захочется вернуть.
 #
 RUN set -eux; \
-    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp; \
-    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp; \
+    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp/downloads; \
+    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp; \
     \
     printf '%s\n' \
       '#!/bin/sh' \
@@ -638,6 +695,14 @@ RUN set -eux; \
     printf '%s\n' \
       '#!/bin/sh' \
       'set -e' \
+      'export CURL_MCP_DOWNLOAD_DIR="${CURL_MCP_DOWNLOAD_DIR:-/var/lib/curl-mcp/downloads}"' \
+      'cd /var/lib/curl-mcp' \
+      'exec /usr/local/lib/curl-mcp/curl-mcp "$@"' \
+      > /usr/local/bin/curl-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
       'export LIGHTPANDA_DISABLE_TELEMETRY="${LIGHTPANDA_DISABLE_TELEMETRY:-true}"' \
       'cd /var/lib/lightpanda' \
       'exec /usr/local/lib/lightpanda/lightpanda "$@"' \
@@ -655,6 +720,7 @@ RUN set -eux; \
       /usr/local/bin/telegram-mcp \
       /usr/local/bin/one-zenwallet-mcp \
       /usr/local/bin/gocardless-mcp \
+      /usr/local/bin/curl-mcp \
       /usr/local/bin/lightpanda \
       /usr/local/bin/lightpanda-mcp
 

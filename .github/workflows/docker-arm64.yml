@@ -228,6 +228,7 @@ jobs:
             command -v gocardless-mcp
             command -v better-telegram-mcp
             command -v mcp-server-fetch
+            command -v curl-mcp
             command -v portainer-mcp
             command -v lightpanda
             command -v lightpanda-mcp
@@ -254,6 +255,11 @@ jobs:
             ! grep -q "uv " /usr/local/bin/telegram-mcp
             head -1 /usr/local/bin/better-telegram-mcp | grep -q "^#!/opt/uv-tools/"
             head -1 /usr/local/bin/mcp-server-fetch | grep -q "^#!/opt/uv-tools/"
+            # curl-mcp зовёт бинарник curl, а не реализует HTTP сам: без него
+            # сервер поднимется и упадёт на первом же запросе
+            command -v curl
+            curl-mcp --version
+            test -w /var/lib/curl-mcp/downloads
             node /usr/local/lib/zenmoney-mcp-ddvin/build/index.js --help >/dev/null 2>&1 || true
             test -f /usr/local/lib/zenmoney-mcp-ddvin/build/index.js
             test -f /usr/local/lib/gocardless-mcp/build/index.js
