@@ -108,6 +108,10 @@ PINS = [
         lambda: git_head("https://github.com/chigwell/telegram-mcp", "HEAD"),
     ),
     Pin("MCP_SERVER_FETCH_VERSION", lambda: pypi_latest("mcp-server-fetch")),
+    Pin(
+        "CURL_MCP_COMMIT",
+        lambda: git_head("https://github.com/david-dvinskykh/curl-mcp", "refs/heads/main"),
+    ),
     Pin("INSTAGRAM_DM_VERSION", lambda: npm_latest("mcp-instagram-dm")),
     Pin("ZENMONEY_NPM_VERSION", lambda: npm_latest("zenmoney-mcp")),
     Pin(
@@ -138,17 +142,6 @@ PINS = [
     ),
 ]
 
-# CURL_MCP_COMMIT is deliberately absent for the same reason as
-# ZENMONEY_DDVIN_COMMIT below: the pinned commit lives on
-# claude/wonderful-darwin-p3jtw7, and curl-mcp's main is still the initial
-# README-only commit, so bumping to main HEAD would take the server out of the
-# image. Once that branch is merged, drop this comment and add:
-#
-#     Pin(
-#         "CURL_MCP_COMMIT",
-#         lambda: git_head("https://github.com/david-dvinskykh/curl-mcp", "refs/heads/main"),
-#     ),
-#
 # ZENMONEY_DDVIN_COMMIT is deliberately absent: it points at a commit on
 # claude/zenmoney-mcp-version-update-6t44bk, not on main, and main does not
 # carry the reminder tools. Following the default branch would silently
