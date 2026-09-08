@@ -20,6 +20,7 @@ export const createAppRouter = (implementations: {
       telegram: frontendRouters.telegram,
       instagram: frontendRouters.instagram,
       fileRelay: frontendRouters.fileRelay,
+      connect: frontendRouters.connect,
     }),
   });
 };

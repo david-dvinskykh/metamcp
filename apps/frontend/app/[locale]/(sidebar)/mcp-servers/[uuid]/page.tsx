@@ -10,7 +10,6 @@ import {
   Edit,
   Eye,
   EyeOff,
-  LogIn,
   Plug,
   SearchCode,
   Server,
@@ -38,6 +37,7 @@ import { useConnection } from "@/hooks/useConnection";
 import { useTranslations } from "@/hooks/useTranslations";
 import { trpc } from "@/lib/trpc";
 
+import { ConnectAccountsButton } from "../connect-accounts-button";
 import { ToolManagement } from "./components/tool-management";
 
 interface McpServerDetailPageProps {
@@ -346,25 +346,10 @@ export default function McpServerDetailPage({
           </Button>
         </Link>
         <div className="flex items-center gap-2">
-          {(server?.type === McpServerTypeEnum.enum.STREAMABLE_HTTP ||
-            server?.type === McpServerTypeEnum.enum.SSE) &&
-            server?.url && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  // The login web app lives next to the MCP endpoint on the
-                  // same origin: strip a trailing /mcp or /sse, append /login.
-                  if (!server?.url) return;
-                  const base = server.url.replace(/\/(mcp|sse)\/?$/, "");
-                  window.open(`${base}/login`, "_blank", "noopener");
-                }}
-                title="Open the server's login page to connect accounts"
-              >
-                <LogIn className="h-4 w-4 mr-2" />
-                Connect stores
-              </Button>
-            )}
+          {/* MCP-Connect: a generic Connect panel driven by whatever the server
+              declares in its tool _meta — works for stdio servers too, since
+              MetaMCP calls the tools over its own session. */}
+          <ConnectAccountsButton serverUuid={uuid} />
           <Button
             variant="outline"
             size="sm"
