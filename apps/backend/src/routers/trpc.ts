@@ -7,6 +7,7 @@ import helmet from "helmet";
 import { createContext } from "../trpc";
 import { apiKeysImplementations } from "../trpc/api-keys.impl";
 import { configImplementations } from "../trpc/config.impl";
+import { connectImplementations } from "../trpc/connect.impl";
 import { endpointsImplementations } from "../trpc/endpoints.impl";
 import { fileRelayImplementations } from "../trpc/file-relay.impl";
 import { instagramImplementations } from "../trpc/instagram.impl";
@@ -33,6 +34,7 @@ const appRouter = createAppRouter({
     telegram: telegramImplementations,
     instagram: instagramImplementations,
     fileRelay: fileRelayImplementations,
+    connect: connectImplementations,
   },
 });
 

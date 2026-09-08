@@ -1,5 +1,6 @@
 import { createApiKeysRouter } from "./api-keys";
 import { createConfigRouter } from "./config";
+import { createConnectRouter } from "./connect";
 import { createEndpointsRouter } from "./endpoints";
 import { createFileRelayRouter } from "./file-relay";
 import { createInstagramRouter } from "./instagram";
@@ -19,6 +20,7 @@ export { createToolsRouter };
 export { createTelegramRouter };
 export { createInstagramRouter };
 export { createFileRelayRouter };
+export { createConnectRouter };
 export { createApiKeysRouter };
 export { createConfigRouter };
 export { createMcpRequestAuditLogsRouter };
@@ -36,6 +38,7 @@ export const createFrontendRouter = (implementations: {
   telegram: Parameters<typeof createTelegramRouter>[0];
   instagram: Parameters<typeof createInstagramRouter>[0];
   fileRelay: Parameters<typeof createFileRelayRouter>[0];
+  connect: Parameters<typeof createConnectRouter>[0];
 }) => {
   return {
     mcpServers: createMcpServersRouter(implementations.mcpServers),
@@ -52,5 +55,6 @@ export const createFrontendRouter = (implementations: {
     telegram: createTelegramRouter(implementations.telegram),
     instagram: createInstagramRouter(implementations.instagram),
     fileRelay: createFileRelayRouter(implementations.fileRelay),
+    connect: createConnectRouter(implementations.connect),
   };
 };
