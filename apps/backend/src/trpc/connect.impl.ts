@@ -375,15 +375,14 @@ export const connectImplementations = {
         ok: status ? status !== "error" : !isError,
       };
       if (message) response.message = message;
-      if (status === "need_input") {
-        const next = normalizeNext(envelope?.next);
+      // A step may carry both: a redirect (open an OAuth login in the browser)
+      // and a next form (what the user pastes back). Read each independently of
+      // the single status so a "redirect" step can still collect fields.
+      if (envelope?.next) {
+        const next = normalizeNext(envelope.next);
         if (next) response.next = next;
       }
-      if (
-        status === "redirect" &&
-        envelope?.redirect &&
-        typeof envelope.redirect.url === "string"
-      ) {
+      if (envelope?.redirect && typeof envelope.redirect.url === "string") {
         response.redirect = {
           url: envelope.redirect.url,
           continuation: envelope.redirect.continuation,
