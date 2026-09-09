@@ -49,7 +49,7 @@ ARG PNPM_VERSION=10.29.3
 # chigwell/telegram-mcp @ main на 2026-07-27 12:47 (PR #168, exposed-tools-allowlist).
 # У ветки нет тегов и она активно движется — без пина пересборка молча меняет
 # версию сервера.
-ARG TELEGRAM_MCP_COMMIT=7ea0adc8d0535e8dae02d07587d44321cca0db09
+ARG TELEGRAM_MCP_COMMIT=02f93bf56ce922cd73209fe0b2f21aacd42a5d65
 
 # david-dvinskykh/better-telegram-mcp — форк, а не PyPI-релиз n24q02m: именно
 # его звал конфиг сервера в MetaMCP (`uvx --from git+...@main`), и в нём есть
@@ -86,7 +86,7 @@ ARG RECEIPTS_MCP_REPO=https://github.com/david-dvinskykh/recipt-fetcher-mcp
 ARG RECEIPTS_MCP_COMMIT=c7cae98fa80ee497012f7244f11fd6e4b288e18d
 
 ARG INSTAGRAM_DM_VERSION=2.1.1
-ARG ZENMONEY_NPM_VERSION=0.3.1
+ARG ZENMONEY_NPM_VERSION=0.4.0
 # 0.6.0 @ 2026-08-22 «Merge reminder tools with the edit/debt line» — к
 # list_reminders и delete_reminder добавляются update_transaction и add_debt.
 # Ветки форка разошлись: напоминания жили только в
@@ -99,7 +99,7 @@ ARG ZENMONEY_DDVIN_COMMIT=25c409a97b9fbe09738f85ce93843e060b3d8800
 
 # david-dvinskykh/one-zenwallet @ main на 2026-07-31 («Support running the MCP
 # server via npx»). Репозиторий активно движется, тегов нет — пин по коммиту.
-ARG ONE_ZENWALLET_COMMIT=3c555f57bf4c98dc7279611ffc82453cdb93f0d2
+ARG ONE_ZENWALLET_COMMIT=f5de9f057476ebb024c6f35859dc7de00a95b23e
 
 # david-dvinskykh/GoCardless-Bank-Accaunt-Data-MCP @ 0.1.0 — MCP-сервер к
 # GoCardless Bank Account Data API (v2, бывший Nordigen): подключение банка и
@@ -107,13 +107,13 @@ ARG ONE_ZENWALLET_COMMIT=3c555f57bf4c98dc7279611ffc82453cdb93f0d2
 # ветка движется — пин по коммиту.
 ARG GOCARDLESS_MCP_COMMIT=985363bdfb13378bd189751313851a42b134f89c
 
-ARG PORTAINER_MCP_VERSION=0.6.1
+ARG PORTAINER_MCP_VERSION=0.7.0
 
 # lightpanda-io/browser — безголовый браузер на Zig со встроенным MCP-сервером
 # (`lightpanda mcp`, stdio по умолчанию). 0.3.7 @ 2026-08-16 — последний
 # нумерованный релиз; тег nightly брать нельзя, он переписывается и образ
 # перестаёт быть воспроизводимым.
-ARG LIGHTPANDA_VERSION=0.3.7
+ARG LIGHTPANDA_VERSION=0.4.0
 
 # ===========================================================================
 # base — как в апстриме: uv + Node 20 + pnpm
@@ -253,8 +253,8 @@ ARG PORTAINER_MCP_VERSION
 ARG TARGETARCH=""
 
 # SHA256 архивов релиза v0.6.1, проверены вручную 2026-07-27.
-ARG SHA256_AMD64=7a9410d8782b72194dc0e29e7dc3b8f7778297c52f7808d86d18e1b6ec5532b8
-ARG SHA256_ARM64=67e885367e1cbc151fddddc8abde2c1704bfad677d72a918e9328d68793a53f7
+ARG SHA256_AMD64=06befc318f7cfa366dded143d4822e37b3307ef949f97c7fe0e9920a5a8f6201
+ARG SHA256_ARM64=e259086cf54516805a9af8e32694e781d62cfbab5139ddb0bb244c6d8dfcc5df
 
 RUN set -eux; \
     apt-get update; \
@@ -296,8 +296,8 @@ ARG LIGHTPANDA_VERSION
 ARG TARGETARCH=""
 
 # SHA256 бинарников релиза 0.3.7, проверены вручную 2026-08-26.
-ARG SHA256_AMD64=895339b02205171a181dde743ae0068bb4564884076feac8482baca9c212aa5a
-ARG SHA256_ARM64=4c0ecb28b4fcfb6d5bce82ec86e15fc6cde89cea168cf3840494f0ee26755852
+ARG SHA256_AMD64=bfcf9bd7e80939b87232aa114a49d8f397f51af0c2632d9fc58d4a6d4386624f
+ARG SHA256_ARM64=5e3b54deed642ffeb2b8f24a1931e54c51161f44d9d728135da3d4863cb722fb
 
 # Запуск скачанного бинарника проверяем только при нативной сборке: при
 # кросс-сборке в файле чужой ELF и exec падает на «Exec format error».
