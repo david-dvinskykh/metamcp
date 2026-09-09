@@ -37,6 +37,7 @@ import { useConnection } from "@/hooks/useConnection";
 import { useTranslations } from "@/hooks/useTranslations";
 import { trpc } from "@/lib/trpc";
 
+import { ConnectAccountsButton } from "../connect-accounts-button";
 import { ToolManagement } from "./components/tool-management";
 
 interface McpServerDetailPageProps {
@@ -345,6 +346,10 @@ export default function McpServerDetailPage({
           </Button>
         </Link>
         <div className="flex items-center gap-2">
+          {/* MCP-Connect: a generic Connect panel driven by whatever the server
+              declares in its tool _meta — works for stdio servers too, since
+              MetaMCP calls the tools over its own session. */}
+          <ConnectAccountsButton serverUuid={uuid} />
           <Button
             variant="outline"
             size="sm"

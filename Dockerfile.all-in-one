@@ -14,6 +14,8 @@
 #   gocardless-mcp     — david-dvinskykh/GoCardless-Bank-Accaunt-Data-MCP,
 #                        сборка по package-lock.json
 #   portainer-mcp      — strnad/portainer-mcp v0.6.1, Go-бинарник из релизов
+#   receipts-mcp       — david-dvinskykh/recipt-fetcher-mcp, Go, выгрузка чеков
+#                        (Lidl/Action/Allegro), сборка из исходников
 #   lightpanda-mcp     — lightpanda-io/browser 0.3.7, встроенный MCP-режим
 #   metamcp-admin      — НЕ ВКЛЮЧЁН: репозиторий удалён с GitHub, см. блок ниже
 #
@@ -48,7 +50,7 @@ ARG PNPM_VERSION=10.29.3
 # chigwell/telegram-mcp @ main на 2026-07-27 12:47 (PR #168, exposed-tools-allowlist).
 # У ветки нет тегов и она активно движется — без пина пересборка молча меняет
 # версию сервера.
-ARG TELEGRAM_MCP_COMMIT=7ea0adc8d0535e8dae02d07587d44321cca0db09
+ARG TELEGRAM_MCP_COMMIT=02f93bf56ce922cd73209fe0b2f21aacd42a5d65
 
 # david-dvinskykh/better-telegram-mcp — форк, а не PyPI-релиз n24q02m: именно
 # его звал конфиг сервера в MetaMCP (`uvx --from git+...@main`), и в нём есть
@@ -70,8 +72,25 @@ ARG BETTER_TELEGRAM_MCP_COMMIT=77f4b96b1ba3b58d37c75e7e9096094168b79e9b
 # ей не нужен.
 ARG MCP_SERVER_FETCH_VERSION=2026.8.18
 
+# curl-mcp — обёртка над самим бинарником curl: mcp-server-fetch умеет только
+# GET со сведением страницы в markdown, а этот сервер даёт POST, PUT, PATCH,
+# DELETE и произвольные заголовки, тело, авторизацию, прокси и unix-сокет.
+# Собирается из исходников: релизов и пакета в npm/PyPI у него нет.
+#
+# Коммит запинен так же, как у остальных компонентов; двигает его ночной
+# автобамп (scripts/bump_pins.py) по main репозитория, а не рука.
+ARG CURL_MCP_REPO=https://github.com/david-dvinskykh/curl-mcp
+ARG CURL_MCP_COMMIT=40b1d2676cc7a6b72ff1247fc27224a1607a4f68
+
+# david-dvinskykh/recipt-fetcher-mcp — MCP-сервер выгрузки чеков из Lidl, Action
+# и Allegro для категоризации трат. Go, stdio по умолчанию. Тегов и пакета нет,
+# ветка движется — пин по коммиту, как у curl-mcp; двигает его ночной автобамп
+# (scripts/bump_pins.py) по main репозитория, а не рука.
+ARG RECEIPTS_MCP_REPO=https://github.com/david-dvinskykh/recipt-fetcher-mcp
+ARG RECEIPTS_MCP_COMMIT=c7cae98fa80ee497012f7244f11fd6e4b288e18d
+
 ARG INSTAGRAM_DM_VERSION=2.1.1
-ARG ZENMONEY_NPM_VERSION=0.3.1
+ARG ZENMONEY_NPM_VERSION=0.4.0
 # 0.6.0 @ 2026-08-22 «Merge reminder tools with the edit/debt line» — к
 # list_reminders и delete_reminder добавляются update_transaction и add_debt.
 # Ветки форка разошлись: напоминания жили только в
@@ -84,7 +103,7 @@ ARG ZENMONEY_DDVIN_COMMIT=25c409a97b9fbe09738f85ce93843e060b3d8800
 
 # david-dvinskykh/one-zenwallet @ main на 2026-07-31 («Support running the MCP
 # server via npx»). Репозиторий активно движется, тегов нет — пин по коммиту.
-ARG ONE_ZENWALLET_COMMIT=3c555f57bf4c98dc7279611ffc82453cdb93f0d2
+ARG ONE_ZENWALLET_COMMIT=f5de9f057476ebb024c6f35859dc7de00a95b23e
 
 # david-dvinskykh/GoCardless-Bank-Accaunt-Data-MCP @ 0.1.0 — MCP-сервер к
 # GoCardless Bank Account Data API (v2, бывший Nordigen): подключение банка и
@@ -92,13 +111,13 @@ ARG ONE_ZENWALLET_COMMIT=3c555f57bf4c98dc7279611ffc82453cdb93f0d2
 # ветка движется — пин по коммиту.
 ARG GOCARDLESS_MCP_COMMIT=985363bdfb13378bd189751313851a42b134f89c
 
-ARG PORTAINER_MCP_VERSION=0.6.1
+ARG PORTAINER_MCP_VERSION=0.7.0
 
 # lightpanda-io/browser — безголовый браузер на Zig со встроенным MCP-сервером
 # (`lightpanda mcp`, stdio по умолчанию). 0.3.7 @ 2026-08-16 — последний
 # нумерованный релиз; тег nightly брать нельзя, он переписывается и образ
 # перестаёт быть воспроизводимым.
-ARG LIGHTPANDA_VERSION=0.3.7
+ARG LIGHTPANDA_VERSION=0.4.0
 
 # ===========================================================================
 # base — как в апстриме: uv + Node 20 + pnpm
@@ -238,8 +257,8 @@ ARG PORTAINER_MCP_VERSION
 ARG TARGETARCH=""
 
 # SHA256 архивов релиза v0.6.1, проверены вручную 2026-07-27.
-ARG SHA256_AMD64=7a9410d8782b72194dc0e29e7dc3b8f7778297c52f7808d86d18e1b6ec5532b8
-ARG SHA256_ARM64=67e885367e1cbc151fddddc8abde2c1704bfad677d72a918e9328d68793a53f7
+ARG SHA256_AMD64=06befc318f7cfa366dded143d4822e37b3307ef949f97c7fe0e9920a5a8f6201
+ARG SHA256_ARM64=e259086cf54516805a9af8e32694e781d62cfbab5139ddb0bb244c6d8dfcc5df
 
 RUN set -eux; \
     apt-get update; \
@@ -281,8 +300,8 @@ ARG LIGHTPANDA_VERSION
 ARG TARGETARCH=""
 
 # SHA256 бинарников релиза 0.3.7, проверены вручную 2026-08-26.
-ARG SHA256_AMD64=895339b02205171a181dde743ae0068bb4564884076feac8482baca9c212aa5a
-ARG SHA256_ARM64=4c0ecb28b4fcfb6d5bce82ec86e15fc6cde89cea168cf3840494f0ee26755852
+ARG SHA256_AMD64=bfcf9bd7e80939b87232aa114a49d8f397f51af0c2632d9fc58d4a6d4386624f
+ARG SHA256_ARM64=5e3b54deed642ffeb2b8f24a1931e54c51161f44d9d728135da3d4863cb722fb
 
 # Запуск скачанного бинарника проверяем только при нативной сборке: при
 # кросс-сборке в файле чужой ELF и exec падает на «Exec format error».
@@ -476,6 +495,69 @@ RUN set -eux; \
     rm -rf .git src test .github
 
 # ===========================================================================
+# curl-mcp-builder — MCP-обёртка над curl, сборка из исходников на Go
+# ===========================================================================
+#
+# Стадия закреплена на BUILDPLATFORM, а GOARCH берётся из TARGETARCH: иначе
+# при сборке arm64-образа на amd64-раннере компилятор шёл бы через QEMU и
+# стоил бы минуты вместо секунд. Go кросс-компилирует сам, CGO не нужен.
+#
+# TARGETARCH проставляет только BuildKit — см. комментарий в portainer-fetcher;
+# при классическом сборщике переменная пуста, и тогда GOARCH не задаётся, а Go
+# собирает под архитектуру самого раннера. Это верно ровно для случая, когда
+# сборщик и цель совпадают, — а классический сборщик иначе и не умеет.
+#
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.25-trixie AS curl-mcp-builder
+
+ARG CURL_MCP_REPO
+ARG CURL_MCP_COMMIT
+ARG TARGETARCH=""
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "${CURL_MCP_REPO}"; \
+    git fetch -q --depth 1 origin "${CURL_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -ldflags "-s -w -X main.version=${CURL_MCP_COMMIT}" \
+      -o /out/curl-mcp .; \
+    test -x /out/curl-mcp
+
+# ===========================================================================
+# receipts-mcp-builder — MCP-сервер выгрузки чеков, сборка из исходников на Go
+# ===========================================================================
+#
+# Тот же приём, что и у curl-mcp: стадия на BUILDPLATFORM, GOARCH из TARGETARCH,
+# Go кросс-компилирует сам, CGO не нужен (chromedp дёргает браузер по CDP, а не
+# линкуется с ним). go.mod требует Go 1.26 — отсюда образ golang:1.26.
+#
+# TARGETARCH проставляет только BuildKit — см. комментарий в portainer-fetcher;
+# при классическом сборщике переменная пуста, и тогда GOARCH не задаётся, а Go
+# собирает под архитектуру самого раннера.
+#
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.26-trixie AS receipts-mcp-builder
+
+ARG RECEIPTS_MCP_REPO
+ARG RECEIPTS_MCP_COMMIT
+ARG TARGETARCH=""
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "${RECEIPTS_MCP_REPO}"; \
+    git fetch -q --depth 1 origin "${RECEIPTS_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -ldflags "-s -w -X main.version=${RECEIPTS_MCP_COMMIT}" \
+      -o /out/receipts-mcp ./cmd/receipts-mcp; \
+    test -x /out/receipts-mcp
+
+# ===========================================================================
 # runner — итоговый образ поверх выбранного варианта MetaMCP
 # ===========================================================================
 #
@@ -496,7 +578,7 @@ USER root
 WORKDIR /app
 
 LABEL org.opencontainers.image.source="https://github.com/david-dvinskykh/metamcp"
-LABEL org.opencontainers.image.description="MetaMCP с предустановленными telegram, instagram, zenmoney, one-zenwallet, gocardless, portainer и lightpanda MCP"
+LABEL org.opencontainers.image.description="MetaMCP с предустановленными telegram, instagram, zenmoney, one-zenwallet, gocardless, portainer, curl и lightpanda MCP"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="MetaMCP custom"
 
@@ -509,9 +591,13 @@ LABEL org.opencontainers.image.title="MetaMCP custom"
 # вреден — MCP-серверу, добавленному через UI (`uvx ...`) и требующему другую
 # версию Python, нужно уметь её скачать. Каталог uv для этого есть и доступен
 # на запись: /home/nextjs/.local/share/uv/python.
+#
+# curl нужен curl-mcp: сервер не реализует HTTP сам, а зовёт бинарник. В
+# стадии base он уже стоит, но при METAMCP_BASE=prebuilt runner наследуется от
+# чужого образа, где его может не быть, — поэтому ставим здесь явно.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends python3; \
+    apt-get install -y --no-install-recommends python3 curl; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
@@ -610,6 +696,25 @@ COPY --from=one-zenwallet-builder --chown=1001:1001 /out /usr/local/lib/one-zenw
 # раздел Developers → User secrets). Всё остальное у сервера с умолчаниями.
 COPY --from=gocardless-builder --chown=1001:1001 /src /usr/local/lib/gocardless-mcp
 
+# --- curl-mcp -------------------------------------------------------------
+#
+# В конфигурации сервера в MetaMCP: команда `curl-mcp`, без аргументов.
+# Инструменты: curl_request (любой метод), curl_download, curl_raw и
+# curl_version. Ограничения правятся окружением — CURL_MCP_MAX_RESPONSE_BYTES,
+# CURL_MCP_TIMEOUT_SECONDS, CURL_MCP_ALLOW_RAW=0 убирает сырой режим.
+COPY --from=curl-mcp-builder /out/curl-mcp /usr/local/lib/curl-mcp/curl-mcp
+
+# --- receipts-mcp ---------------------------------------------------------
+#
+# В конфигурации сервера в MetaMCP: команда `receipts-mcp`, без аргументов
+# (дефолт — stdio; флаг --http нужен только для отдельного веб-логина, который
+# в составе MetaMCP не используется). Инструменты выгружают чеки из Lidl, Action
+# и Allegro и ведут вход в аккаунты; секреты сервер не принимает в окружении, а
+# хранит сам — зашифрованный AES-256-GCM файл в RECEIPTS_STATE_DIR, ключ рядом
+# (0600). Каталог делаем записываемым и кладём под том, иначе учётки теряются
+# при каждом пересоздании контейнера.
+COPY --from=receipts-mcp-builder /out/receipts-mcp /usr/local/lib/receipts-mcp/receipts-mcp
+
 # --- lightpanda -----------------------------------------------------------
 COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpanda
 
@@ -644,8 +749,8 @@ COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpa
 # конфигурации сервера, если телеметрию захочется вернуть.
 #
 RUN set -eux; \
-    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp; \
-    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp; \
+    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp/downloads /var/lib/receipts-mcp; \
+    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp /var/lib/receipts-mcp; \
     \
     printf '%s\n' \
       '#!/bin/sh' \
@@ -689,6 +794,22 @@ RUN set -eux; \
     printf '%s\n' \
       '#!/bin/sh' \
       'set -e' \
+      'export CURL_MCP_DOWNLOAD_DIR="${CURL_MCP_DOWNLOAD_DIR:-/var/lib/curl-mcp/downloads}"' \
+      'cd /var/lib/curl-mcp' \
+      'exec /usr/local/lib/curl-mcp/curl-mcp "$@"' \
+      > /usr/local/bin/curl-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'export RECEIPTS_STATE_DIR="${RECEIPTS_STATE_DIR:-/var/lib/receipts-mcp}"' \
+      'cd /var/lib/receipts-mcp' \
+      'exec /usr/local/lib/receipts-mcp/receipts-mcp "$@"' \
+      > /usr/local/bin/receipts-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
       'export LIGHTPANDA_DISABLE_TELEMETRY="${LIGHTPANDA_DISABLE_TELEMETRY:-true}"' \
       'cd /var/lib/lightpanda' \
       'exec /usr/local/lib/lightpanda/lightpanda "$@"' \
@@ -706,6 +827,8 @@ RUN set -eux; \
       /usr/local/bin/telegram-mcp \
       /usr/local/bin/one-zenwallet-mcp \
       /usr/local/bin/gocardless-mcp \
+      /usr/local/bin/curl-mcp \
+      /usr/local/bin/receipts-mcp \
       /usr/local/bin/lightpanda \
       /usr/local/bin/lightpanda-mcp
 
@@ -737,7 +860,7 @@ USER nextjs
 
 EXPOSE 12008
 
-VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp", "/var/lib/gocardless-mcp"]
+VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp", "/var/lib/gocardless-mcp", "/var/lib/receipts-mcp"]
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:12008/health || exit 1

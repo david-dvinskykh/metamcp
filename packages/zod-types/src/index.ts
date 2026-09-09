@@ -12,3 +12,4 @@ export * from "./mcp-request-audit-logs.zod";
 export * from "./telegram.zod";
 export * from "./instagram.zod";
 export * from "./file-relay.zod";
+export * from "./connect.zod";

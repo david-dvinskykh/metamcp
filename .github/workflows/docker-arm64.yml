@@ -229,6 +229,8 @@ jobs:
             command -v better-telegram-mcp
             command -v better-telegram-mcp-go
             command -v mcp-server-fetch
+            command -v curl-mcp
+            command -v receipts-mcp
             command -v portainer-mcp
             command -v lightpanda
             command -v lightpanda-mcp
@@ -259,6 +261,15 @@ jobs:
             head -c 4 /usr/local/bin/better-telegram-mcp-go | grep -q ELF
             better-telegram-mcp-go version
             head -1 /usr/local/bin/mcp-server-fetch | grep -q "^#!/opt/uv-tools/"
+            # curl-mcp зовёт бинарник curl, а не реализует HTTP сам: без него
+            # сервер поднимется и упадёт на первом же запросе
+            command -v curl
+            curl-mcp --version
+            test -w /var/lib/curl-mcp/downloads
+            # receipts-mcp — Go-бинарник, stdio по умолчанию; хранилище учёток
+            # должно быть записываемым, иначе шифрованный файл ключей не создать
+            receipts-mcp -version
+            test -w /var/lib/receipts-mcp
             node /usr/local/lib/zenmoney-mcp-ddvin/build/index.js --help >/dev/null 2>&1 || true
             test -f /usr/local/lib/zenmoney-mcp-ddvin/build/index.js
             test -f /usr/local/lib/gocardless-mcp/build/index.js
@@ -297,6 +308,15 @@ jobs:
           grep -q '"gocardless-bank-account-data"' /tmp/gc.out
           grep -q '"connect_bank"' /tmp/gc.out
           grep -q '"get_account_transactions"' /tmp/gc.out
+
+          # receipts-mcp: stdio-сервер выгрузки чеков (go-sdk). Пайп-handshake
+          # тут не годится: на мгновенном EOF от heredoc сервер закрывает сессию
+          # раньше, чем успевает ответить, и stdout пуст (в MetaMCP пайп живёт,
+          # проблемы нет). Поэтому проверяем строку старта в stderr — она
+          # доказывает, что бинарник запускается на aarch64 и MCP-сервер встал.
+          docker run --rm -i --entrypoint receipts-mcp "$IMAGE" </dev/null > /tmp/rc.out 2> /tmp/rc.err || true
+          cat /tmp/rc.err
+          grep -q 'serving MCP over stdio' /tmp/rc.err
 
           # lightpanda-mcp — тот же случай: `command -v` не проверяет ни
           # динамические зависимости бинарника (нужен GLIBC_2.34), ни то, что

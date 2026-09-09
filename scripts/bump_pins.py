@@ -108,6 +108,14 @@ PINS = [
         lambda: git_head("https://github.com/chigwell/telegram-mcp", "HEAD"),
     ),
     Pin("MCP_SERVER_FETCH_VERSION", lambda: pypi_latest("mcp-server-fetch")),
+    Pin(
+        "CURL_MCP_COMMIT",
+        lambda: git_head("https://github.com/david-dvinskykh/curl-mcp", "refs/heads/main"),
+    ),
+    Pin(
+        "RECEIPTS_MCP_COMMIT",
+        lambda: git_head("https://github.com/david-dvinskykh/recipt-fetcher-mcp", "refs/heads/main"),
+    ),
     Pin("INSTAGRAM_DM_VERSION", lambda: npm_latest("mcp-instagram-dm")),
     Pin("ZENMONEY_NPM_VERSION", lambda: npm_latest("zenmoney-mcp")),
     Pin(
