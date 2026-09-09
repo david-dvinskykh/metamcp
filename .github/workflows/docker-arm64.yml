@@ -227,6 +227,7 @@ jobs:
             command -v one-zenwallet-mcp
             command -v gocardless-mcp
             command -v better-telegram-mcp
+            command -v better-telegram-mcp-go
             command -v mcp-server-fetch
             command -v portainer-mcp
             command -v lightpanda
@@ -253,6 +254,10 @@ jobs:
             # процессом-родителем на всё время жизни сервера и стоит десятки МБ
             ! grep -q "uv " /usr/local/bin/telegram-mcp
             head -1 /usr/local/bin/better-telegram-mcp | grep -q "^#!/opt/uv-tools/"
+            # Go-сборка — статический бинарник, а не шим: ни интерпретатора,
+            # ни venv за спиной, поэтому и обёртки ей не нужно
+            head -c 4 /usr/local/bin/better-telegram-mcp-go | grep -q ELF
+            better-telegram-mcp-go version
             head -1 /usr/local/bin/mcp-server-fetch | grep -q "^#!/opt/uv-tools/"
             node /usr/local/lib/zenmoney-mcp-ddvin/build/index.js --help >/dev/null 2>&1 || true
             test -f /usr/local/lib/zenmoney-mcp-ddvin/build/index.js

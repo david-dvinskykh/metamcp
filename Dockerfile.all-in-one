@@ -6,6 +6,7 @@
 #                        (file relay и прочее живут только в сборке из исходников)
 #   telegram-mcp       — chigwell/telegram-mcp (Python, uv sync по uv.lock)
 #   better-telegram-mcp— PyPI-пакет, ставится uv tool install, версия зафиксирована
+#   better-telegram-mcp-go — тот же форк, Go-сборка (stdio), отдельной командой
 #   mcp-instagram-dm   — npm-пакет, версия зафиксирована
 #   zenmoney-mcp       — npm-пакет zenmoney-mcp, версия зафиксирована
 #   zenmoney-mcp-ddvin — форк david-dvinskykh, сборка по package-lock.json
@@ -56,9 +57,12 @@ ARG TELEGRAM_MCP_COMMIT=7ea0adc8d0535e8dae02d07587d44321cca0db09
 #
 # Коммит запинен, как и у всех остальных компонентов этого файла: `@main`
 # менял сервер молча при каждом пересоздании контейнера. Обновление — правкой
-# этого ARG.
+# этого ARG (её делает ночной автобамп scripts/bump_pins.py).
+#
+# Этот же коммит собирает и Go-версию (стадия better-telegram-go-builder): один
+# форк, одна ветка, один пин — обе сборки всегда из одного исходника.
 ARG BETTER_TELEGRAM_MCP_REPO=https://github.com/david-dvinskykh/better-telegram-mcp
-ARG BETTER_TELEGRAM_MCP_COMMIT=e742a7e106e7e56a3baeca23832be424dee42576
+ARG BETTER_TELEGRAM_MCP_COMMIT=77f4b96b1ba3b58d37c75e7e9096094168b79e9b
 
 # modelcontextprotocol/servers, пакет mcp-server-fetch. Ставится в образ, чтобы
 # конфиг сервера в MetaMCP звал готовую консольную команду вместо `uvx`.
@@ -323,6 +327,42 @@ RUN set -eux; \
 # выводом типов, и хук prepare (tsc) падает на TS7031. `npm ci` по лок-файлу
 # (zod 4.3.6, typescript 5.9.3) проходит чисто.
 #
+# ===========================================================================
+# better-telegram-go-builder — Go-сборка того же форка better-telegram-mcp
+# ===========================================================================
+#
+# Форк с 2026-09-09 несёт вторую реализацию тех же семи инструментов — на Go,
+# только stdio (cmd/ + internal/, описание в GO.md). Питоновский сервер выше
+# остаётся на месте и не трогается: это второй бинарник рядом, под другим
+# именем, чтобы его можно было включить отдельным сервером в MetaMCP и сравнить.
+#
+# Ради чего: питоновские MCP-серверы в этом образе занимают 100–200 МБ RSS
+# каждый, Go-шный portainer-mcp — 13 МБ. Здесь ~18 МБ статики без интерпретатора.
+#
+# Коммит берётся из того же ARG, что и питоновская установка: один форк, одна
+# ветка main, один пин — значит ночной автобамп двигает обе сборки разом.
+#
+# Базовый образ по плавающему мажорному тегу, как node:20 у соседних стадий:
+# go.mod объявляет нужную версию тулчейна сам и догрузит её, если базовая
+# старше.
+FROM golang:1-trixie AS better-telegram-go-builder
+
+ARG BETTER_TELEGRAM_MCP_REPO
+ARG BETTER_TELEGRAM_MCP_COMMIT
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "${BETTER_TELEGRAM_MCP_REPO}"; \
+    git fetch -q --depth 1 origin "${BETTER_TELEGRAM_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    test -f go.mod || { echo "в этом коммите нет Go-сборки" >&2; exit 1; }; \
+    go test ./...; \
+    CGO_ENABLED=0 go build -trimpath \
+      -ldflags "-s -w -X github.com/david-dvinskykh/better-telegram-mcp/internal/server.Version=${BETTER_TELEGRAM_MCP_COMMIT}" \
+      -o /out/better-telegram-mcp-go ./cmd/better-telegram-mcp; \
+    /out/better-telegram-mcp-go version
+
 FROM node:20-bookworm-slim AS zenmoney-ddvin-builder
 
 ARG ZENMONEY_DDVIN_COMMIT
@@ -519,6 +559,17 @@ RUN set -eux; \
     test -x "${py}"; \
     "${py}" -c "import better_telegram_mcp, mcp.server.fastmcp"; \
     "${py}" -c "import importlib.metadata as m; v=m.version('mcp'); assert int(v.split('.')[0]) < 2, v; print('mcp', v)"
+
+# --- better-telegram-mcp-go -----------------------------------------------
+# Go-сборка того же форка, отдельной командой. Питоновский better-telegram-mcp
+# выше остаётся рабочим сервером; эта команда ничего не подменяет, пока в
+# MetaMCP не заведён сервер, который её зовёт.
+COPY --from=better-telegram-go-builder /out/better-telegram-mcp-go /usr/local/bin/better-telegram-mcp-go
+RUN set -eux; \
+    chmod 0755 /usr/local/bin/better-telegram-mcp-go; \
+    command -v better-telegram-mcp-go; \
+    better-telegram-mcp-go version; \
+    better-telegram-mcp-go --help | grep -q 'auth --bot-token'
 
 # --- mcp-server-fetch -----------------------------------------------------
 # Тот же приём, что и с better-telegram-mcp: `uv tool install` кладёт в
