@@ -361,13 +361,18 @@ RUN set -eux; \
 # Коммит берётся из того же ARG, что и питоновская установка: один форк, одна
 # ветка main, один пин — значит ночной автобамп двигает обе сборки разом.
 #
+# Сборка идёт на платформе сборщика с кросс-компиляцией под TARGETARCH — как у
+# curl-mcp и receipts-mcp ниже. Под arm64 нативная сборка шла бы через QEMU, а
+# эмулированный Go-тулчейн стоит десятки минут на ровном месте.
+#
 # Базовый образ по плавающему мажорному тегу, как node:20 у соседних стадий:
 # go.mod объявляет нужную версию тулчейна сам и догрузит её, если базовая
 # старше.
-FROM golang:1-trixie AS better-telegram-go-builder
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1-trixie AS better-telegram-go-builder
 
 ARG BETTER_TELEGRAM_MCP_REPO
 ARG BETTER_TELEGRAM_MCP_COMMIT
+ARG TARGETARCH=""
 
 WORKDIR /src
 RUN set -eux; \
@@ -377,10 +382,11 @@ RUN set -eux; \
     git checkout -q FETCH_HEAD; \
     test -f go.mod || { echo "в этом коммите нет Go-сборки" >&2; exit 1; }; \
     go test ./...; \
-    CGO_ENABLED=0 go build -trimpath \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath \
       -ldflags "-s -w -X github.com/david-dvinskykh/better-telegram-mcp/internal/server.Version=${BETTER_TELEGRAM_MCP_COMMIT}" \
       -o /out/better-telegram-mcp-go ./cmd/better-telegram-mcp; \
-    /out/better-telegram-mcp-go version
+    test -x /out/better-telegram-mcp-go
 
 FROM node:20-bookworm-slim AS zenmoney-ddvin-builder
 
@@ -650,6 +656,9 @@ RUN set -eux; \
 # Go-сборка того же форка, отдельной командой. Питоновский better-telegram-mcp
 # выше остаётся рабочим сервером; эта команда ничего не подменяет, пока в
 # MetaMCP не заведён сервер, который её зовёт.
+#
+# Запуск бинарника проверяется здесь, а не в стадии сборки: там он собран под
+# TARGETARCH и на сборщике может просто не запуститься.
 COPY --from=better-telegram-go-builder /out/better-telegram-mcp-go /usr/local/bin/better-telegram-mcp-go
 RUN set -eux; \
     chmod 0755 /usr/local/bin/better-telegram-mcp-go; \
