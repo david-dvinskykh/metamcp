@@ -87,7 +87,7 @@ ARG CURL_MCP_COMMIT=40b1d2676cc7a6b72ff1247fc27224a1607a4f68
 # ветка движется — пин по коммиту, как у curl-mcp; двигает его ночной автобамп
 # (scripts/bump_pins.py) по main репозитория, а не рука.
 ARG RECEIPTS_MCP_REPO=https://github.com/david-dvinskykh/recipt-fetcher-mcp
-ARG RECEIPTS_MCP_COMMIT=6a2ab5f37c97ea5ccca44af14551a324a15bbdd5
+ARG RECEIPTS_MCP_COMMIT=2a076e7e53a58b6529e1a9b8f52bcb5fd0062d5e
 
 ARG INSTAGRAM_DM_VERSION=2.1.1
 ARG ZENMONEY_NPM_VERSION=0.4.0
