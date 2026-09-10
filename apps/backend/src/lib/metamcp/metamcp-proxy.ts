@@ -42,6 +42,7 @@ import {
   resolveRelayCaller,
 } from "../file-relay";
 import { ConnectedClient } from "./client";
+import { withServerSessionDeadline } from "./connect-deadline";
 import { getMcpServers } from "./fetch-metamcp";
 import { extractForwardedHeaders, mergeHeaders } from "./header-forwarding";
 import { requestWithSessionRecovery } from "./list-handler-recovery";
@@ -229,7 +230,13 @@ export const createServer = async (
       for (const [uuid] of allServerEntries) {
         await mcpServerPool.resetServerErrorState(uuid);
       }
-      await mcpServerPool.ensureIdleSessions(serverParams, namespaceUuid);
+      // Bounded for the same reason as the per-server waits below: this warmup
+      // awaits every server, so one that never finishes its handshake would
+      // hold tools/list open on its own.
+      await withServerSessionDeadline(
+        `the pool warmup for namespace ${namespaceUuid}`,
+        mcpServerPool.ensureIdleSessions(serverParams, namespaceUuid),
+      );
       const afterStatus = mcpServerPool.getPoolStatus();
       console.log(
         `[DEBUG-TOOLS] ✅ Pool warmup complete: ${afterStatus.idle} idle, ${afterStatus.active} active`,
@@ -259,11 +266,14 @@ export const createServer = async (
             }
           : params;
 
-        const session = await mcpServerPool.getSession(
-          context.sessionId,
-          mcpServerUuid,
-          effectiveParams,
-          namespaceUuid,
+        const session = await withServerSessionDeadline(
+          `server ${params.name || mcpServerUuid} (tools/list)`,
+          mcpServerPool.getSession(
+            context.sessionId,
+            mcpServerUuid,
+            effectiveParams,
+            namespaceUuid,
+          ),
         );
         if (!session) {
           console.log(`[DEBUG-TOOLS] ❌ No session for: ${params.name}`);
@@ -484,11 +494,14 @@ export const createServer = async (
               }
             : params;
 
-          const session = await mcpServerPool.getSession(
-            sessionId,
-            mcpServerUuid,
-            effectiveParams,
-            namespaceUuid,
+          const session = await withServerSessionDeadline(
+            `server ${params.name || mcpServerUuid} (tools/call lookup)`,
+            mcpServerPool.getSession(
+              sessionId,
+              mcpServerUuid,
+              effectiveParams,
+              namespaceUuid,
+            ),
           );
 
           if (session) {
@@ -836,11 +849,14 @@ export const createServer = async (
             }
           : params;
 
-        const session = await mcpServerPool.getSession(
-          sessionId,
-          uuid,
-          effectiveParams,
-          namespaceUuid,
+        const session = await withServerSessionDeadline(
+          `server ${params.name || uuid} (prompts/list)`,
+          mcpServerPool.getSession(
+            sessionId,
+            uuid,
+            effectiveParams,
+            namespaceUuid,
+          ),
         );
         if (!session) {
           logger.error(
@@ -984,11 +1000,14 @@ export const createServer = async (
             }
           : params;
 
-        const session = await mcpServerPool.getSession(
-          sessionId,
-          uuid,
-          effectiveParams,
-          namespaceUuid,
+        const session = await withServerSessionDeadline(
+          `server ${params.name || uuid} (resources/list)`,
+          mcpServerPool.getSession(
+            sessionId,
+            uuid,
+            effectiveParams,
+            namespaceUuid,
+          ),
         );
         if (!session) {
           logger.error(
@@ -1163,11 +1182,14 @@ export const createServer = async (
               }
             : params;
 
-          const session = await mcpServerPool.getSession(
-            sessionId,
-            uuid,
-            effectiveParams,
-            namespaceUuid,
+          const session = await withServerSessionDeadline(
+            `server ${params.name || uuid} (resources/templates/list)`,
+            mcpServerPool.getSession(
+              sessionId,
+              uuid,
+              effectiveParams,
+              namespaceUuid,
+            ),
           );
           if (!session) {
             logger.error(
