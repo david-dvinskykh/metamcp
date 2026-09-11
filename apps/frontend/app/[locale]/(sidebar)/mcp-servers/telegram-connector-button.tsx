@@ -247,6 +247,10 @@ export function TelegramConnectorButton() {
     const loginId = loginIdRef.current;
     if (!loginId) return;
     setError(null);
+    if (!SERVER_NAME_PATTERN.test(serverName) || /_{2,}/.test(serverName)) {
+      setError(t("mcp-servers:telegram.invalidName"));
+      return;
+    }
     try {
       const response = await createServer.mutateAsync({
         login_id: loginId,
@@ -577,8 +581,26 @@ export function TelegramConnectorButton() {
                 account: describeAccount(loginState),
               })}
             </p>
+            {/* Editable here too: a name already taken is rejected by the
+                backend without spending the login, so the user only has to
+                rename rather than scan a new QR code. */}
+            <div className="space-y-2">
+              <Label htmlFor="telegram-confirm-server-name">
+                {t("mcp-servers:name")}
+              </Label>
+              <Input
+                id="telegram-confirm-server-name"
+                value={serverName}
+                onChange={(event) => setServerName(event.target.value)}
+                placeholder={TELEGRAM_MCP_DEFAULT_SERVER_NAME}
+              />
+            </div>
+
             <p className="text-xs text-muted-foreground">
-              {t("mcp-servers:telegram.createHelp", { name: serverName })}
+              {t("mcp-servers:telegram.createHelp", {
+                name: serverName,
+                command: command.trim() || TELEGRAM_MCP_DEFAULT_COMMAND,
+              })}
             </p>
 
             <div className="flex justify-end space-x-2">
@@ -592,7 +614,7 @@ export function TelegramConnectorButton() {
               <Button
                 type="button"
                 onClick={handleCreate}
-                disabled={createServer.isPending}
+                disabled={!serverName.trim() || createServer.isPending}
               >
                 {createServer.isPending && (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
