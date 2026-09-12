@@ -17,6 +17,9 @@
 #   receipts-mcp       — david-dvinskykh/recipt-fetcher-mcp, Go, выгрузка чеков
 #                        (Lidl/Action/Allegro), сборка из исходников
 #   lightpanda-mcp     — lightpanda-io/browser 0.3.7, встроенный MCP-режим
+#   notion-proxy-search— david-dvinskykh/notion-proxy-search-mcp, Go, зеркало
+#                        Notion в SQLite с гибридным поиском (int8-эмбеддинги +
+#                        BM25); в образ кладётся и квантованный весовой блоб
 #   metamcp-admin      — НЕ ВКЛЮЧЁН: репозиторий удалён с GitHub, см. блок ниже
 #
 # Контекст сборки не нужен — все исходники клонируются внутри.
@@ -88,6 +91,23 @@ ARG CURL_MCP_COMMIT=40b1d2676cc7a6b72ff1247fc27224a1607a4f68
 # (scripts/bump_pins.py) по main репозитория, а не рука.
 ARG RECEIPTS_MCP_REPO=https://github.com/david-dvinskykh/recipt-fetcher-mcp
 ARG RECEIPTS_MCP_COMMIT=f5f028a6cbc7b1e7e33d51c3a647d7a56993f588
+
+# david-dvinskykh/notion-proxy-search-mcp — зеркало Notion в SQLite с локальным
+# гибридным поиском (int8-эмбеддинги + BM25 + обход связей). Go, только stdio,
+# без cgo. Пин стоит на ветке claude/notion-mcp-proxy-vector-search-jrilq2, а не
+# на main, поэтому ночной автобамп его не двигает — так же, как у
+# ZENMONEY_DDVIN_COMMIT (см. комментарий в scripts/bump_pins.py). После мерджа
+# ветки в main пин станет обычной строкой в PINS.
+ARG NOTION_PROXY_SEARCH_MCP_REPO=https://github.com/david-dvinskykh/notion-proxy-search-mcp
+ARG NOTION_PROXY_SEARCH_MCP_COMMIT=5c33b24d6fb890b149e960632d0c59306b342372
+
+# Контрольная точка эмбеддингов, из которой собирается весовой блоб. Ревизия
+# запинена сознательно: смена модели меняет все векторы в зеркале, поэтому она
+# не должна происходить от того, что на Hugging Face обновили ветку. Сервер
+# пишет имя модели рядом с каждым вектором и пересчитывает их сам, если имя
+# изменилось, — но считать будет час на плате.
+ARG NOTION_SEARCH_MODEL_REPO=intfloat/multilingual-e5-small
+ARG NOTION_SEARCH_MODEL_REVISION=614241f622f53c4eeff9890bdc4f31cfecc418b3
 
 ARG INSTAGRAM_DM_VERSION=2.1.1
 ARG ZENMONEY_NPM_VERSION=0.4.0
@@ -564,6 +584,63 @@ RUN set -eux; \
     test -x /out/receipts-mcp
 
 # ===========================================================================
+# notion-proxy-search-builder — зеркало Notion с локальным поиском + весовой блоб
+# ===========================================================================
+#
+# Тот же приём, что у curl-mcp и receipts-mcp: стадия на BUILDPLATFORM, GOARCH из
+# TARGETARCH, Go кросс-компилирует сам, cgo не нужен (SQLite здесь —
+# modernc.org/sqlite, чистый Go, и эмбеддинги тоже считаются на Go).
+#
+# Стадия собирает бинарь дважды. Первый раз — под архитектуру раннера: им же
+# запускается квантование контрольной точки, а выполнить arm64-бинарь на
+# amd64-раннере нельзя (эмуляция стоила бы десятки минут). Второй раз — под
+# TARGETARCH, и этот попадает в образ.
+#
+# Тесты прогоняются здесь: в них лежит сверка int8-энкодера с float-референсом и
+# совместимость collection://-видов с SQL официального сервера. Падение теста
+# должно валить сборку, а не уезжать на плату.
+#
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1-trixie AS notion-proxy-search-builder
+
+ARG NOTION_PROXY_SEARCH_MCP_REPO
+ARG NOTION_PROXY_SEARCH_MCP_COMMIT
+ARG NOTION_SEARCH_MODEL_REPO
+ARG NOTION_SEARCH_MODEL_REVISION
+ARG TARGETARCH=""
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "${NOTION_PROXY_SEARCH_MCP_REPO}"; \
+    git fetch -q --depth 1 origin "${NOTION_PROXY_SEARCH_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    go test ./...; \
+    CGO_ENABLED=0 go build -trimpath -o /tmp/nps-host ./cmd/notion-proxy-search-mcp; \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -ldflags "-s -w -X main.Version=${NOTION_PROXY_SEARCH_MCP_COMMIT}" \
+      -o /out/notion-proxy-search-mcp ./cmd/notion-proxy-search-mcp; \
+    test -x /out/notion-proxy-search-mcp
+
+# Контрольная точка весит 470 МБ в float32; в образ попадает только
+# квантованный блоб (~118 МБ). convert делает самопроверку — грузит блоб обратно
+# и требует единичный вектор, — поэтому битый блоб валит сборку здесь.
+RUN set -eux; \
+    mkdir -p /tmp/model; \
+    for name in config.json tokenizer.json model.safetensors; do \
+      curl -fsSL --retry 3 --retry-delay 2 \
+        -o "/tmp/model/${name}" \
+        "https://huggingface.co/${NOTION_SEARCH_MODEL_REPO}/resolve/${NOTION_SEARCH_MODEL_REVISION}/${name}"; \
+    done; \
+    /tmp/nps-host convert \
+      -model-dir /tmp/model \
+      -out /out/model.npse \
+      -name "${NOTION_SEARCH_MODEL_REPO}@${NOTION_SEARCH_MODEL_REVISION}"; \
+    rm -rf /tmp/model /tmp/nps-host; \
+    ls -l /out/model.npse
+
+# ===========================================================================
 # runner — итоговый образ поверх выбранного варианта MetaMCP
 # ===========================================================================
 #
@@ -584,7 +661,7 @@ USER root
 WORKDIR /app
 
 LABEL org.opencontainers.image.source="https://github.com/david-dvinskykh/metamcp"
-LABEL org.opencontainers.image.description="MetaMCP с предустановленными telegram, instagram, zenmoney, one-zenwallet, gocardless, portainer, curl и lightpanda MCP"
+LABEL org.opencontainers.image.description="MetaMCP с предустановленными telegram, instagram, zenmoney, one-zenwallet, gocardless, portainer, curl, lightpanda и notion-proxy-search MCP"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="MetaMCP custom"
 
@@ -724,6 +801,25 @@ COPY --from=curl-mcp-builder /out/curl-mcp /usr/local/lib/curl-mcp/curl-mcp
 # при каждом пересоздании контейнера.
 COPY --from=receipts-mcp-builder /out/receipts-mcp /usr/local/lib/receipts-mcp/receipts-mcp
 
+# --- notion-proxy-search --------------------------------------------------
+#
+# В конфигурации сервера в MetaMCP: команда `notion-proxy-search-mcp`, без
+# аргументов (по умолчанию это режим serve — MCP на stdio). В окружении нужен
+# один секрет — NOTION_TOKEN, внутренняя интеграция Notion с правами только на
+# чтение, расшаренная со страницей «База знаний».
+#
+# Первый serve сам поднимает демона-синхронизатор (setsid, лог в
+# NPS_DATA_DIR/daemon.log): он переживает сессии, держит весовой блоб
+# отображённым один раз на хост и владеет зеркалом. Stdio-процесс весов не
+# грузит вовсе, поэтому параллельные сессии не умножают 118 МБ.
+#
+# Каталог данных под томом: иначе при каждом пересоздании контейнера зеркало
+# собиралось бы заново, а это обход всего воркспейса и час счёта эмбеддингов.
+# NPS_EMBED_WORKERS=2 в конфигурации сервера оставляет половину ядер остальным
+# контейнерам на время первичной индексации.
+COPY --from=notion-proxy-search-builder /out/notion-proxy-search-mcp /usr/local/lib/notion-proxy-search-mcp/notion-proxy-search-mcp
+COPY --from=notion-proxy-search-builder /out/model.npse /usr/local/lib/notion-proxy-search-mcp/model.npse
+
 # --- lightpanda -----------------------------------------------------------
 COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpanda
 
@@ -758,8 +854,8 @@ COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpa
 # конфигурации сервера, если телеметрию захочется вернуть.
 #
 RUN set -eux; \
-    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp/downloads /var/lib/receipts-mcp; \
-    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp /var/lib/receipts-mcp; \
+    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp/downloads /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp; \
+    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp; \
     \
     printf '%s\n' \
       '#!/bin/sh' \
@@ -819,6 +915,15 @@ RUN set -eux; \
     printf '%s\n' \
       '#!/bin/sh' \
       'set -e' \
+      'export NPS_DATA_DIR="${NPS_DATA_DIR:-/var/lib/notion-proxy-search-mcp}"' \
+      'export NPS_MODEL="${NPS_MODEL:-/usr/local/lib/notion-proxy-search-mcp/model.npse}"' \
+      'cd "$NPS_DATA_DIR"' \
+      'exec /usr/local/lib/notion-proxy-search-mcp/notion-proxy-search-mcp "$@"' \
+      > /usr/local/bin/notion-proxy-search-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
       'export LIGHTPANDA_DISABLE_TELEMETRY="${LIGHTPANDA_DISABLE_TELEMETRY:-true}"' \
       'cd /var/lib/lightpanda' \
       'exec /usr/local/lib/lightpanda/lightpanda "$@"' \
@@ -838,6 +943,7 @@ RUN set -eux; \
       /usr/local/bin/gocardless-mcp \
       /usr/local/bin/curl-mcp \
       /usr/local/bin/receipts-mcp \
+      /usr/local/bin/notion-proxy-search-mcp \
       /usr/local/bin/lightpanda \
       /usr/local/bin/lightpanda-mcp
 
@@ -869,7 +975,7 @@ USER nextjs
 
 EXPOSE 12008
 
-VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp", "/var/lib/gocardless-mcp", "/var/lib/receipts-mcp"]
+VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp", "/var/lib/gocardless-mcp", "/var/lib/receipts-mcp", "/var/lib/notion-proxy-search-mcp"]
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:12008/health || exit 1
