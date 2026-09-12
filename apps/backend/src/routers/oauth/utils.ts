@@ -349,3 +349,36 @@ export function securityHeaders(
 
   next();
 }
+
+/**
+ * Whether the row's refresh token can still buy a new access token.
+ *
+ * A refresh token is the client's only way back to a working access token
+ * without a human re-authorizing the connector. Expiring the access token is
+ * routine and happens every hour; dropping the row that carries the refresh
+ * token along with it is what turns that routine expiry into a dead
+ * connection, so callers reacting to an expired access token must check this
+ * before deleting anything.
+ */
+export function hasUsableRefreshToken(
+  token: {
+    refresh_token: string | null;
+    refresh_token_expires_at: Date | null;
+  },
+  now: number = Date.now(),
+): boolean {
+  if (!token.refresh_token) {
+    return false;
+  }
+
+  // A null expiry means the refresh token was issued without one, so it is
+  // still usable; only a past expiry rules it out.
+  if (
+    token.refresh_token_expires_at &&
+    now > token.refresh_token_expires_at.getTime()
+  ) {
+    return false;
+  }
+
+  return true;
+}

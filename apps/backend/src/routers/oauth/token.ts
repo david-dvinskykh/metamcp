@@ -6,6 +6,7 @@ import { oauthRepository } from "../../db/repositories";
 import {
   generateSecureAccessToken,
   generateSecureRefreshToken,
+  hasUsableRefreshToken,
   rateLimitToken,
 } from "./utils";
 
@@ -331,7 +332,12 @@ tokenRouter.post("/oauth/introspect", async (req, res) => {
 
     // Check if token has expired
     if (Date.now() > tokenData.expires_at.getTime()) {
-      await oauthRepository.deleteAccessToken(token);
+      // Keep the row while its refresh token is still good: it is the only
+      // thing that lets the client mint a new access token on its own. The
+      // periodic cleanup removes the row once the refresh token expires too.
+      if (!hasUsableRefreshToken(tokenData)) {
+        await oauthRepository.deleteAccessToken(token);
+      }
       return res.json({
         active: false,
       });
