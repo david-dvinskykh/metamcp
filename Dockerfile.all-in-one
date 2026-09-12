@@ -50,7 +50,7 @@ ARG PNPM_VERSION=10.29.3
 # chigwell/telegram-mcp @ main на 2026-07-27 12:47 (PR #168, exposed-tools-allowlist).
 # У ветки нет тегов и она активно движется — без пина пересборка молча меняет
 # версию сервера.
-ARG TELEGRAM_MCP_COMMIT=348bafc54c06f244f1bda37bfba822a8ed459ead
+ARG TELEGRAM_MCP_COMMIT=98fb1e7befc602eb5f77041aa8335a9e27e3b95b
 
 # david-dvinskykh/better-telegram-mcp — форк, а не PyPI-релиз n24q02m: именно
 # его звал конфиг сервера в MetaMCP (`uvx --from git+...@main`), и в нём есть
