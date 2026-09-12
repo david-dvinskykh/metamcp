@@ -3,6 +3,7 @@ import express from "express";
 import logger from "@/utils/logger";
 
 import { oauthRepository } from "../../db/repositories";
+import { hasUsableRefreshToken } from "./utils";
 
 const userinfoRouter = express.Router();
 
@@ -42,7 +43,12 @@ userinfoRouter.get("/oauth/userinfo", async (req, res) => {
 
     // Check if token has expired
     if (Date.now() > tokenData.expires_at.getTime()) {
-      await oauthRepository.deleteAccessToken(token);
+      // Same rule as introspection: an expired access token must not take a
+      // live refresh token down with it, or the client is locked out until a
+      // human re-authorizes it.
+      if (!hasUsableRefreshToken(tokenData)) {
+        await oauthRepository.deleteAccessToken(token);
+      }
       return res.status(401).json({
         error: "invalid_token",
         error_description: "Access token has expired",
