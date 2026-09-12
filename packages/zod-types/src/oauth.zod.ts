@@ -75,6 +75,8 @@ export const OAuthAuthorizationCodeSchema = z.object({
   user_id: z.string(),
   code_challenge: z.string().nullable(),
   code_challenge_method: z.string().nullable(),
+  // Namespace picked during a global-endpoint authorization; null otherwise.
+  namespace_uuid: z.string().uuid().nullable(),
   expires_at: z.date(),
   created_at: z.date(),
 });
@@ -88,6 +90,7 @@ export const OAuthAccessTokenSchema = z.object({
   expires_at: z.date(),
   refresh_token: z.string().nullable(),
   refresh_token_expires_at: z.date().nullable(),
+  namespace_uuid: z.string().uuid().nullable(),
   created_at: z.date(),
 });
 
@@ -119,6 +122,7 @@ export const OAuthAuthorizationCodeCreateInputSchema = z.object({
   user_id: z.string(),
   code_challenge: z.string().nullable().optional(),
   code_challenge_method: z.string().nullable().optional(),
+  namespace_uuid: z.string().uuid().nullable().optional(),
   expires_at: z.number(), // timestamp
 });
 
@@ -126,6 +130,7 @@ export const OAuthAccessTokenCreateInputSchema = z.object({
   client_id: z.string(),
   user_id: z.string(),
   scope: z.string(),
+  namespace_uuid: z.string().uuid().nullable().optional(),
   expires_at: z.number(), // timestamp
 });
 

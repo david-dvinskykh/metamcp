@@ -1,6 +1,11 @@
 import { DatabaseEndpoint } from "@repo/zod-types";
 import express from "express";
 
+import {
+  GLOBAL_ENDPOINT_NAME,
+  GLOBAL_ENDPOINT_PATH,
+  GLOBAL_ENDPOINT_SCOPE,
+} from "@/lib/global-endpoint";
 import logger from "@/utils/logger";
 
 import { ApiKeysRepository } from "../db/repositories/api-keys.repo";
@@ -17,6 +22,9 @@ export interface ApiKeyAuthenticatedRequest extends express.Request {
   apiKeyUserId?: string;
   apiKeyUuid?: string;
   oauthUserId?: string; // For OAuth-authenticated requests
+  // Namespace the OAuth token is bound to, set only when the token carries one
+  // (a global-endpoint token). Per-endpoint tokens leave this undefined.
+  oauthNamespaceUuid?: string;
   authMethod?: "api_key" | "oauth"; // Track which auth method was used
 }
 
@@ -57,6 +65,7 @@ async function validateOAuthToken(
 ): Promise<{
   valid: boolean;
   user_id?: string;
+  namespace_uuid?: string;
   scopes?: string[];
   error?: string;
 }> {
@@ -87,6 +96,7 @@ async function validateOAuthToken(
           active?: boolean;
           sub?: string;
           scope?: string;
+          namespace_uuid?: string | null;
         };
 
         if (!introspectData.active) {
@@ -96,6 +106,7 @@ async function validateOAuthToken(
         return {
           valid: true,
           user_id: introspectData.sub,
+          namespace_uuid: introspectData.namespace_uuid ?? undefined,
           scopes: introspectData.scope
             ? introspectData.scope.split(" ")
             : ["admin"],
@@ -245,6 +256,7 @@ export const authenticateApiKey = async (
         if (oauthResult.valid) {
           // OAuth token valid - perform access control and pass
           authReq.oauthUserId = oauthResult.user_id;
+          authReq.oauthNamespaceUuid = oauthResult.namespace_uuid;
           authReq.authMethod = "oauth";
 
           const accessCheckResult = checkOAuthAccess(oauthResult, endpoint);
@@ -315,6 +327,7 @@ export const authenticateApiKey = async (
       if (oauthResult.valid) {
         // OAuth token valid - perform access control and pass
         authReq.oauthUserId = oauthResult.user_id;
+        authReq.oauthNamespaceUuid = oauthResult.namespace_uuid;
         authReq.authMethod = "oauth";
 
         const accessCheckResult = checkOAuthAccess(oauthResult, endpoint);
@@ -458,12 +471,23 @@ function sendOAuthChallengeResponse(
   endpoint: DatabaseEndpoint,
 ): express.Response {
   const baseUrl = getBaseUrl(req);
+  const isGlobalEndpoint = endpoint.name === GLOBAL_ENDPOINT_NAME;
+
+  // The global endpoint points at its own resource metadata and asks for the
+  // namespace scope: that pair is what tells the client this connection needs
+  // the user to choose a namespace while authorizing.
+  const resourceMetadataUrl = isGlobalEndpoint
+    ? `${baseUrl}/.well-known/oauth-protected-resource${GLOBAL_ENDPOINT_PATH}`
+    : `${baseUrl}/.well-known/oauth-protected-resource`;
+  const challengeScope = isGlobalEndpoint
+    ? `admin ${GLOBAL_ENDPOINT_SCOPE}`
+    : "admin";
 
   // Set WWW-Authenticate header for OAuth flow
   const bearerChallenge = [
     `Bearer realm="MetaMCP"`,
-    `scope="admin"`,
-    `resource_metadata="${baseUrl}/.well-known/oauth-protected-resource"`,
+    `scope="${challengeScope}"`,
+    `resource_metadata="${resourceMetadataUrl}"`,
   ].join(", ");
 
   res.set("WWW-Authenticate", bearerChallenge);
@@ -485,7 +509,7 @@ function sendOAuthChallengeResponse(
   return res.status(401).json({
     error: "authentication_required",
     error_description: errorDescription,
-    resource_metadata: `${baseUrl}/.well-known/oauth-protected-resource`,
+    resource_metadata: resourceMetadataUrl,
     supported_methods: authMethods,
     timestamp: new Date().toISOString(),
   });

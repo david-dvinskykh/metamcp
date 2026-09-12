@@ -63,6 +63,7 @@ export class OAuthRepository {
       user_id: data.user_id,
       code_challenge: data.code_challenge,
       code_challenge_method: data.code_challenge_method,
+      namespace_uuid: data.namespace_uuid ?? null,
       expires_at: new Date(data.expires_at),
     });
   }
@@ -101,6 +102,7 @@ export class OAuthRepository {
       refresh_token_expires_at: data.refresh_token_expires_at
         ? new Date(data.refresh_token_expires_at)
         : null,
+      namespace_uuid: data.namespace_uuid ?? null,
     });
   }
 

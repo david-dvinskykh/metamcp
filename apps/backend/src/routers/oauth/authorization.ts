@@ -4,6 +4,8 @@ import logger from "@/utils/logger";
 
 import { auth } from "../../auth";
 import { oauthRepository } from "../../db/repositories";
+import { namespacesRepository } from "../../db/repositories/namespaces.repo";
+import { isGlobalEndpointRequest } from "../../lib/global-endpoint";
 import {
   generateSecureAuthCode,
   getBaseUrl,
@@ -13,6 +15,49 @@ import {
 } from "./utils";
 
 const authorizationRouter = express.Router();
+
+/** Frontend page that lets the user pick which namespace a token serves. */
+const NAMESPACE_SELECTION_PATH = "/fe-oauth/select-namespace";
+
+function encodeOAuthParams(params: OAuthParams): string {
+  return Buffer.from(JSON.stringify(params)).toString("base64url");
+}
+
+function buildNamespaceSelectionUrl(
+  baseUrl: string,
+  params: OAuthParams,
+): string {
+  const url = new URL(NAMESPACE_SELECTION_PATH, baseUrl);
+  url.searchParams.set("params", encodeOAuthParams(params));
+  return url.toString();
+}
+
+/**
+ * Resolve the namespace a global authorization should be bound to.
+ *
+ * The user may only bind a namespace they can already reach: their own or a
+ * public one. Anything else is refused rather than silently downgraded, since
+ * the namespace is what the resulting token is allowed to serve.
+ */
+async function resolveSelectedNamespace(
+  namespaceUuid: string,
+  userId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const namespace = await namespacesRepository.findByUuid(namespaceUuid);
+
+  if (!namespace) {
+    return { ok: false, message: "Selected namespace no longer exists" };
+  }
+
+  if (namespace.user_id !== null && namespace.user_id !== userId) {
+    return {
+      ok: false,
+      message: "You can only connect to your own or public namespaces",
+    };
+  }
+
+  return { ok: true };
+}
 
 /**
  * OAuth 2.0 Authorization Endpoint
@@ -28,6 +73,7 @@ authorizationRouter.get("/oauth/authorize", rateLimitAuth, async (req, res) => {
       state,
       code_challenge,
       code_challenge_method,
+      resource,
     } = req.query;
 
     logger.info("OAuth authorize request:", {
@@ -116,6 +162,11 @@ authorizationRouter.get("/oauth/authorize", rateLimitAuth, async (req, res) => {
       code_challenge_method: code_challenge_method
         ? (code_challenge_method as string)
         : undefined,
+      resource: resource ? (resource as string) : undefined,
+      global: isGlobalEndpointRequest({
+        resource: resource as string | undefined,
+        scope: scope as string | undefined,
+      }),
     };
 
     logger.info(
@@ -145,6 +196,14 @@ authorizationRouter.get("/oauth/authorize", rateLimitAuth, async (req, res) => {
           };
 
           if (sessionData?.user?.id) {
+            // Global endpoint: the token has to name a namespace, and only the
+            // user can say which one, so ask before issuing the code.
+            if (oauthParams.global) {
+              return res.redirect(
+                buildNamespaceSelectionUrl(baseUrl, oauthParams),
+              );
+            }
+
             // User is already authenticated, generate authorization code directly
             const code = generateSecureAuthCode();
 
@@ -177,12 +236,12 @@ authorizationRouter.get("/oauth/authorize", rateLimitAuth, async (req, res) => {
 
     // User is not authenticated, redirect to login page
     const authUrl = new URL("/login", baseUrl);
-    const encodedParams = Buffer.from(JSON.stringify(oauthParams)).toString(
-      "base64url",
-    );
+    const encodedParams = encodeOAuthParams(oauthParams);
     authUrl.searchParams.set(
       "callbackUrl",
-      `/oauth/callback?params=${encodedParams}`,
+      oauthParams.global
+        ? `${NAMESPACE_SELECTION_PATH}?params=${encodedParams}`
+        : `/oauth/callback?params=${encodedParams}`,
     );
 
     // Redirect to frontend login page
@@ -325,6 +384,49 @@ Content-Type: application/json
       return res.redirect(loginUrl.toString());
     }
 
+    // The encoded params ride in the URL, so they are attacker-supplied until
+    // proven otherwise: re-check that the client is registered and that the
+    // redirect really belongs to it. Without this, a crafted link could have a
+    // signed-in user hand an authorization code to any address.
+    const callbackClient = await oauthRepository.getClient(client_id);
+    if (
+      !callbackClient ||
+      !validateRedirectUri(redirect_uri) ||
+      !callbackClient.redirect_uris.includes(redirect_uri)
+    ) {
+      return res.status(400).json({
+        error: "invalid_request",
+        error_description: "redirect_uri is not registered for this client",
+      });
+    }
+
+    // Global endpoint: the code carries the namespace the user picked, so a
+    // request that arrives without one goes back to the picker.
+    let namespaceUuid: string | null = null;
+    if (oauthParams.global) {
+      const selected = req.query.namespace_uuid as string | undefined;
+
+      if (!selected) {
+        return res.redirect(
+          buildNamespaceSelectionUrl(getBaseUrl(req), oauthParams),
+        );
+      }
+
+      const selection = await resolveSelectedNamespace(
+        selected,
+        sessionData.user.id,
+      );
+
+      if (!selection.ok) {
+        return res.status(403).json({
+          error: "access_denied",
+          error_description: selection.message,
+        });
+      }
+
+      namespaceUuid = selected;
+    }
+
     // User is authenticated, generate authorization code
     const code = generateSecureAuthCode();
 
@@ -336,6 +438,7 @@ Content-Type: application/json
       user_id: sessionData.user.id,
       code_challenge: oauthParams.code_challenge || null,
       code_challenge_method: oauthParams.code_challenge_method || null,
+      namespace_uuid: namespaceUuid,
       expires_at: Date.now() + 10 * 60 * 1000, // 10 minutes
     });
 

@@ -32,3 +32,43 @@ sequenceDiagram
     
     Client->>API: API Request<br/>Authorization: Bearer {access_token}
     API-->>Client: Protected resource response
+## Global endpoint
+
+Every named endpoint puts its namespace in the URL (`/metamcp/<endpoint>/mcp`),
+so a team needs one endpoint and one connector per namespace. The global
+endpoint is a single URL the whole team can share instead:
+
+```
+https://<your-metamcp>/metamcp/mcp
+```
+
+Each member adds that same URL, signs in as themselves, and picks which of
+their namespaces the connection serves. The choice is bound to the OAuth token,
+so the URL stays the same while each token reaches only its own namespace.
+
+How the choice is carried:
+
+1. The client connects with no token and gets `401` with
+   `WWW-Authenticate: Bearer scope="admin namespace",
+   resource_metadata=".../.well-known/oauth-protected-resource/metamcp/mcp"`.
+2. That document advertises the `namespace` scope, which marks this resource as
+   one that needs a namespace chosen during authorization.
+3. `/oauth/authorize` recognises the request (by the `resource` parameter, or by
+   the `namespace` scope for clients that omit it), signs the user in if needed,
+   and sends them to the namespace picker instead of issuing a code straight
+   away.
+4. The picked namespace is stored on the authorization code, moves to the access
+   token, and is carried across every refresh.
+5. Requests to `/metamcp/mcp` read the namespace from the token. The namespace is
+   re-checked on each request, so a namespace that was deleted or handed to
+   another user stops working immediately.
+
+Notes:
+
+- OAuth only. An API key carries no namespace, so it cannot authenticate here;
+  use a named endpoint for API-key access.
+- MetaMCP admin tools are never exposed on the global endpoint.
+- A user may bind only a namespace they can already reach: their own, or a
+  public one.
+- To connect to a second namespace, add the same URL again and pick the other
+  namespace; the two connections get separate tokens.

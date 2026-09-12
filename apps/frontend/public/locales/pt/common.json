@@ -67,7 +67,14 @@
   "oauth": {
     "processingCallback": "Processando callback OAuth...",
     "authorizationInProgress": "Autorização em andamento...",
-    "redirecting": "Redirecionando..."
+    "redirecting": "Redirecionando...",
+    "namespaceSelection": {
+      "title": "Escolha um namespace",
+      "description": "Esta conexão vai usar o namespace que você escolher. Conecte novamente para usar outro.",
+      "connect": "Conectar",
+      "empty": "Você ainda não tem namespaces. Crie um e inicie a conexão de novo.",
+      "missingRequest": "Esta página foi aberta sem um pedido de autorização. Inicie a conexão pelo seu cliente MCP."
+    }
   },
   "pagination": {
     "previous": "Anterior",

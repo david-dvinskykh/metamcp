@@ -1,6 +1,7 @@
 import cors from "cors";
 import express from "express";
 
+import { GLOBAL_ENDPOINT_PATH } from "@/lib/global-endpoint";
 import logger from "@/utils/logger";
 
 import { endpointsRepository } from "../db/repositories/endpoints.repo";
@@ -75,6 +76,14 @@ publicEndpointsRouter.get("/", async (req, res) => {
       service: "public-endpoints",
       version: "1.0.0",
       description: "Public MetaMCP endpoints",
+      // One URL the whole team can share: sign in, pick a namespace, and the
+      // token carries that choice from then on.
+      global_endpoint: {
+        mcp: GLOBAL_ENDPOINT_PATH,
+        auth: "oauth",
+        description:
+          "Namespace is chosen during OAuth authorization and stored in the token",
+      },
       endpoints: publicEndpoints,
     });
   } catch (error) {
