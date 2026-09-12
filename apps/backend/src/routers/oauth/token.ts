@@ -18,7 +18,12 @@ const REFRESH_TOKEN_EXPIRY = 7 * 24 * 3600; // 7 days
 /**
  * Issue a new access token + refresh token pair and store them.
  */
-async function issueTokenPair(clientId: string, userId: string, scope: string) {
+async function issueTokenPair(
+  clientId: string,
+  userId: string,
+  scope: string,
+  namespaceUuid: string | null,
+) {
   const accessToken = generateSecureAccessToken();
   const refreshToken = generateSecureRefreshToken();
 
@@ -26,6 +31,9 @@ async function issueTokenPair(clientId: string, userId: string, scope: string) {
     client_id: clientId,
     user_id: userId,
     scope,
+    // The namespace the user chose while authorizing travels with the token,
+    // so the global MCP endpoint can serve that namespace and no other.
+    namespace_uuid: namespaceUuid,
     expires_at: Date.now() + ACCESS_TOKEN_EXPIRY * 1000,
     refresh_token: refreshToken,
     refresh_token_expires_at: Date.now() + REFRESH_TOKEN_EXPIRY * 1000,
@@ -222,6 +230,7 @@ async function handleAuthorizationCodeGrant(
     codeData.client_id,
     codeData.user_id,
     codeData.scope,
+    codeData.namespace_uuid,
   );
 
   res.json({
@@ -287,6 +296,7 @@ async function handleRefreshTokenGrant(
     tokenData.client_id,
     tokenData.user_id,
     tokenData.scope,
+    tokenData.namespace_uuid,
   );
 
   res.json({
@@ -348,6 +358,7 @@ tokenRouter.post("/oauth/introspect", async (req, res) => {
       active: true,
       scope: tokenData.scope,
       client_id: tokenData.client_id,
+      namespace_uuid: tokenData.namespace_uuid,
       token_type: "Bearer",
       exp: Math.floor(tokenData.expires_at.getTime() / 1000),
       iat: Math.floor(tokenData.created_at.getTime() / 1000),

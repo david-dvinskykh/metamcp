@@ -11,6 +11,13 @@ export interface OAuthParams {
   state?: string;
   code_challenge?: string;
   code_challenge_method?: string;
+  /** Resource the client asked a token for (RFC 8707), when it sent one. */
+  resource?: string;
+  /**
+   * Set when the request is for the global MCP endpoint, which is served by
+   * whichever namespace the user picks before the code is issued.
+   */
+  global?: boolean;
 }
 
 /**

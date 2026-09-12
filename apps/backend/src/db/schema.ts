@@ -556,6 +556,12 @@ export const oauthAuthorizationCodesTable = pgTable(
       .references(() => usersTable.id, { onDelete: "cascade" }),
     code_challenge: text("code_challenge"),
     code_challenge_method: text("code_challenge_method"),
+    // Namespace the user picked while authorizing the global MCP endpoint.
+    // Null for a per-endpoint authorization, where the URL names the namespace.
+    namespace_uuid: uuid("namespace_uuid").references(
+      () => namespacesTable.uuid,
+      { onDelete: "cascade" },
+    ),
     expires_at: timestamp("expires_at", { withTimezone: true }).notNull(),
     created_at: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -585,12 +591,20 @@ export const oauthAccessTokensTable = pgTable(
     refresh_token_expires_at: timestamp("refresh_token_expires_at", {
       withTimezone: true,
     }),
+    // Namespace this token is bound to, carried over from the authorization
+    // code and across every refresh. The global MCP endpoint reads it to know
+    // which namespace the caller asked for; null for per-endpoint tokens.
+    namespace_uuid: uuid("namespace_uuid").references(
+      () => namespacesTable.uuid,
+      { onDelete: "cascade" },
+    ),
     created_at: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
   (table) => [
     index("oauth_access_tokens_client_id_idx").on(table.client_id),
+    index("oauth_access_tokens_namespace_uuid_idx").on(table.namespace_uuid),
     index("oauth_access_tokens_user_id_idx").on(table.user_id),
     index("oauth_access_tokens_expires_at_idx").on(table.expires_at),
     index("oauth_access_tokens_refresh_token_idx").on(table.refresh_token),

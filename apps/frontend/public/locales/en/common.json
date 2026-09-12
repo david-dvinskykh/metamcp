@@ -69,7 +69,14 @@
     "authorizationInProgress": "Authorization in progress...",
     "redirecting": "Redirecting...",
     "callbackFailedTitle": "OAuth authorization failed",
-    "backToMcpServers": "Back to MCP servers"
+    "backToMcpServers": "Back to MCP servers",
+    "namespaceSelection": {
+      "title": "Choose a namespace",
+      "description": "This connection will serve the namespace you pick. Connect again to use another one.",
+      "connect": "Connect",
+      "empty": "You have no namespaces yet. Create one first, then start the connection again.",
+      "missingRequest": "This page was opened without an authorization request. Start the connection from your MCP client."
+    }
   },
   "pagination": {
     "previous": "Previous",

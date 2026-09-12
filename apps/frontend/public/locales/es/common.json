@@ -67,7 +67,14 @@
   "oauth": {
     "processingCallback": "Procesando callback OAuth...",
     "authorizationInProgress": "Autorización en progreso...",
-    "redirecting": "Redirigiendo..."
+    "redirecting": "Redirigiendo...",
+    "namespaceSelection": {
+      "title": "Elige un espacio de nombres",
+      "description": "Esta conexión usará el espacio de nombres que elijas. Conéctate de nuevo para usar otro.",
+      "connect": "Conectar",
+      "empty": "Todavía no tienes espacios de nombres. Crea uno y vuelve a iniciar la conexión.",
+      "missingRequest": "Esta página se abrió sin una solicitud de autorización. Inicia la conexión desde tu cliente MCP."
+    }
   },
   "pagination": {
     "previous": "Anterior",

@@ -2,6 +2,11 @@ import express from "express";
 
 import logger from "@/utils/logger";
 
+import {
+  GLOBAL_ENDPOINT_PATH,
+  GLOBAL_ENDPOINT_SCOPE,
+  isGlobalEndpointResource,
+} from "../../lib/global-endpoint";
 import { getBaseUrl } from "./utils";
 
 const metadataRouter = express.Router();
@@ -12,6 +17,83 @@ const metadataRouter = express.Router();
  * https://datatracker.ietf.org/doc/rfc9728/
  * https://modelcontextprotocol.io/specification/draft/basic/authorization
  */
+/**
+ * Build the protected-resource document for one resource URL.
+ *
+ * RFC 9728 lets a client ask about a specific resource by appending its path to
+ * the well-known URL, which is how an MCP client discovers the global endpoint.
+ * The document then advertises the namespace scope, the signal that this
+ * resource wants the user to choose a namespace while authorizing.
+ */
+function buildProtectedResourceMetadata(baseUrl: string, resourcePath: string) {
+  const authServerUrl = baseUrl;
+  const isGlobalEndpoint = isGlobalEndpointResource(resourcePath);
+
+  // Ensure the resource URL has a trailing slash for OAuth validation
+  // This is required by RFC 9728 for exact resource matching
+  const resourceUrl = resourcePath
+    ? new URL(resourcePath, baseUrl).toString()
+    : baseUrl.endsWith("/")
+      ? baseUrl
+      : baseUrl + "/";
+
+  return {
+    resource: resourceUrl,
+    authorization_servers: [authServerUrl],
+    bearer_methods_supported: ["header"],
+    scopes_supported: isGlobalEndpoint
+      ? ["admin", GLOBAL_ENDPOINT_SCOPE]
+      : ["admin"],
+    resource_name: isGlobalEndpoint
+      ? "MetaMCP Global Endpoint"
+      : "MetaMCP Protected Resource",
+    dpop_bound_access_tokens_required: false,
+    authorization_details_types_supported: ["mcp_endpoint_access"],
+    resource_server_capabilities: {
+      token_types_supported: ["Bearer"],
+      introspection_endpoint: `${baseUrl}/oauth/introspect`,
+      revocation_endpoint: `${baseUrl}/oauth/revoke`,
+    },
+  };
+}
+
+function setMetadataHeaders(res: express.Response) {
+  res.set({
+    "Content-Type": "application/json",
+    "Cache-Control": "public, max-age=3600", // Cache for 1 hour
+    "Access-Control-Allow-Origin": "*", // Allow CORS for discovery
+    "Access-Control-Allow-Methods": "GET",
+    "Access-Control-Allow-Headers": "Content-Type",
+  });
+}
+
+// Resource-specific discovery: /.well-known/oauth-protected-resource/metamcp/mcp
+metadataRouter.get(
+  "/.well-known/oauth-protected-resource/*resourcePath",
+  async (req, res) => {
+    try {
+      const segments = (req.params as Record<string, string | string[]>)
+        .resourcePath;
+      const resourcePath =
+        "/" + (Array.isArray(segments) ? segments.join("/") : segments);
+
+      setMetadataHeaders(res);
+      return res.json(
+        buildProtectedResourceMetadata(getBaseUrl(req), resourcePath),
+      );
+    } catch (error) {
+      logger.error(
+        "Error generating OAuth protected resource metadata:",
+        error,
+      );
+      return res.status(500).json({
+        error: "internal_server_error",
+        error_description: "Failed to generate OAuth metadata",
+      });
+    }
+  },
+);
+
 metadataRouter.get(
   "/.well-known/oauth-protected-resource",
   async (req, res) => {
@@ -133,6 +215,13 @@ metadataRouter.get(
 
         // Code challenge methods - PKCE support (OAuth 2.1 compliant)
         code_challenge_methods_supported: ["S256"],
+
+        // Scopes this server understands: "namespace" asks the user to pick
+        // which namespace a token serves, used by the global MCP endpoint.
+        scopes_supported: ["admin", GLOBAL_ENDPOINT_SCOPE],
+
+        // The one MCP URL a whole team can share.
+        global_mcp_endpoint: `${baseUrl}${GLOBAL_ENDPOINT_PATH}`,
 
         // OAuth 2.1 compliance indicators
         require_pushed_authorization_requests: false,
