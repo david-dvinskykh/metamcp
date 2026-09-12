@@ -106,11 +106,14 @@ export const SubmitTelegramPasswordRequestSchema = z.object({
 });
 
 /**
- * Default STDIO wiring for the connector. Matches the `telegram-mcp`
- * launcher shipped in the all-in-one image (chigwell/telegram-mcp), which
- * reads TELEGRAM_API_ID / TELEGRAM_API_HASH / TELEGRAM_SESSION_STRING.
+ * Default STDIO wiring for the connector: the Go build of
+ * better-telegram-mcp shipped in the all-in-one image, which seeds its
+ * session from TELEGRAM_SESSION_STRING and needs
+ * TELEGRAM_SESSION_LOCK=shared to survive MetaMCP spawning one process per
+ * connection. A Telethon-based server (`telegram-mcp`, `better-telegram-mcp`)
+ * reads the same variables and can be selected under Advanced settings.
  */
-export const TELEGRAM_MCP_DEFAULT_COMMAND = "telegram-mcp";
+export const TELEGRAM_MCP_DEFAULT_COMMAND = "better-telegram-mcp-go";
 export const TELEGRAM_MCP_DEFAULT_SERVER_NAME = "telegram";
 
 export const CreateTelegramMcpServerRequestSchema = z.object({

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { resolveEnvApiCredentials } from "./config";
+import { resolveEnvApiCredentials, resolveEnvDataDir } from "./config";
 
 const VALID_HASH = "0123456789abcdef0123456789abcdef";
 
@@ -59,5 +59,32 @@ describe("resolveEnvApiCredentials", () => {
     process.env.TELEGRAM_API_ID = "1234567";
     process.env.TELEGRAM_API_HASH = "deadbeef";
     expect(resolveEnvApiCredentials()).toMatchObject({ status: "invalid" });
+  });
+});
+
+describe("resolveEnvDataDir", () => {
+  const original = process.env.TELEGRAM_DATA_DIR;
+
+  beforeEach(() => {
+    delete process.env.TELEGRAM_DATA_DIR;
+  });
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.TELEGRAM_DATA_DIR;
+    else process.env.TELEGRAM_DATA_DIR = original;
+  });
+
+  it("is undefined when the deployment sets nothing", () => {
+    expect(resolveEnvDataDir()).toBeUndefined();
+  });
+
+  it("treats a blank value as unset", () => {
+    process.env.TELEGRAM_DATA_DIR = "   ";
+    expect(resolveEnvDataDir()).toBeUndefined();
+  });
+
+  it("returns the configured directory", () => {
+    process.env.TELEGRAM_DATA_DIR = "/opt/telegram/data/better-telegram-mcp";
+    expect(resolveEnvDataDir()).toBe("/opt/telegram/data/better-telegram-mcp");
   });
 });

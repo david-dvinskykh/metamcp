@@ -12,7 +12,12 @@ import { z } from "zod";
 
 import logger from "@/utils/logger";
 
-import { resolveEnvApiCredentials } from "../lib/telegram/config";
+import { mcpServersRepository } from "../db/repositories";
+import {
+  resolveEnvApiCredentials,
+  resolveEnvDataDir,
+} from "../lib/telegram/config";
+import { buildTelegramConnectorEnv } from "../lib/telegram/connector-env";
 import {
   TelegramLoginError,
   telegramQrLoginManager,
@@ -133,6 +138,20 @@ export const telegramImplementations = {
     input: z.infer<typeof CreateTelegramMcpServerRequestSchema>,
     userId: string,
   ): Promise<z.infer<typeof CreateMcpServerResponseSchema>> => {
+    // Names are unique per owner. Checking before the login is consumed keeps
+    // it alive, so a taken name costs a new name rather than a new QR scan.
+    const owner = input.user_id !== undefined ? input.user_id : userId;
+    const taken = await mcpServersRepository.findByNameAndUserId(
+      input.name,
+      owner,
+    );
+    if (taken) {
+      return {
+        success: false as const,
+        message: `An MCP server named "${input.name}" already exists — choose another name`,
+      };
+    }
+
     let credentials;
     try {
       credentials = await telegramQrLoginManager.consume(
@@ -164,11 +183,13 @@ export const telegramImplementations = {
         type: McpServerTypeEnum.enum.STDIO,
         command: input.command?.trim() || TELEGRAM_MCP_DEFAULT_COMMAND,
         args: input.args ?? [],
-        env: {
-          TELEGRAM_API_ID: String(credentials.apiId),
-          TELEGRAM_API_HASH: credentials.apiHash,
-          TELEGRAM_SESSION_STRING: credentials.sessionString,
-        },
+        env: buildTelegramConnectorEnv({
+          apiId: credentials.apiId,
+          apiHash: credentials.apiHash,
+          sessionString: credentials.sessionString,
+          serverName: input.name,
+          dataDir: resolveEnvDataDir(),
+        }),
         user_id: input.user_id,
       },
       userId,

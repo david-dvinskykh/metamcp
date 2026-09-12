@@ -611,15 +611,23 @@ MetaMCP by hand.
 4. Confirm the account it signed in as, and the STDIO MCP server is created with
 
    ```
-   TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_STRING
+   TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_STRING,
+   TELEGRAM_SESSION_NAME, TELEGRAM_SESSION_LOCK=shared
    ```
 
-   already filled in — the same variables `chigwell/telegram-mcp` and other Telethon-based
-   Telegram MCP servers read. The command defaults to `telegram-mcp` (the launcher baked into
-   the all-in-one image) and can be changed under **Advanced settings**.
+   already filled in. The command defaults to `better-telegram-mcp-go` (the Go build baked
+   into the all-in-one image) and can be changed under **Advanced settings** — a Telethon-based
+   server such as `telegram-mcp` or `better-telegram-mcp` reads the same variables and ignores
+   the lock.
 
-The session string is written in Telethon's own `StringSession` format, so it drops straight
-into a Python Telegram MCP server.
+   The last two are what make the created server actually run under MetaMCP. The session lives
+   in a file the server locks while it runs, and MetaMCP starts one process per connection, so
+   an exclusive lock would leave every process after the first exiting as if it had crashed.
+   The session name is the connector's own name, so two accounts connected from one deployment
+   never share a session file.
+
+The session string is written in Telethon's own `StringSession` format, so it also drops
+straight into a Python Telegram MCP server.
 
 **Configuring the application.** Register one app at
 [my.telegram.org/apps](https://my.telegram.org/apps) and give the MetaMCP backend:
@@ -628,6 +636,7 @@ into a Python Telegram MCP server.
 | --- | --- |
 | `TELEGRAM_API_ID` | The application's numeric ID. |
 | `TELEGRAM_API_HASH` | The application's 32-character hex hash. |
+| `TELEGRAM_DATA_DIR` | Optional. Passed to the created server as its data directory, so the session file survives a container being replaced. Unset, the server uses `~/.better-telegram-mcp` and re-seeds the session from the session string. |
 
 With both set, every user of this MetaMCP only has to scan a QR — and the `api_hash` never
 leaves the backend. Set only one of the two and the dialog says so rather than quietly falling

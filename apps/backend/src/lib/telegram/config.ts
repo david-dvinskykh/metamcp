@@ -71,3 +71,15 @@ export function resolveEnvApiCredentials(): TelegramCredentialsResolution {
 
   return { status: "ok", credentials: { apiId, apiHash: rawApiHash } };
 }
+
+/**
+ * Data directory the created connector should keep its MTProto session in.
+ *
+ * Unset is a valid answer: the server then uses its own default under the
+ * home directory, which still works because the session file is re-seeded
+ * from TELEGRAM_SESSION_STRING whenever it is missing. Setting it to a
+ * mounted path is what makes the session survive a container being replaced.
+ */
+export function resolveEnvDataDir(): string | undefined {
+  return readEnv("TELEGRAM_DATA_DIR");
+}
