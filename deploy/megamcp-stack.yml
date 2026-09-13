@@ -105,6 +105,16 @@ services:
       - zenmoney_ddvin_data:/var/lib/zenmoney-mcp-ddvin
       - one_zenwallet_data:/var/lib/one-zenwallet-mcp
       - gocardless_data:/var/lib/gocardless-mcp
+      - receipts_data:/var/lib/receipts-mcp
+      # notion-proxy-search держит здесь зеркало Notion (SQLite) и сокет
+      # демона. Том обязателен и стоит дороже остальных: без него Docker
+      # выдаёт на каждое пересоздание контейнера новый анонимный том (в образе
+      # объявлен VOLUME), и зеркало строится с нуля — а полная первичная
+      # индексация воркспейса считается часами, то есть при автообновлении раз
+      # в сутки не досчитывается никогда. Проверено 13.09.2026: обновление
+      # образа в 13:43 подменило том 52d4eb08… на пустой 5e185b2d…, и демон
+      # начал bootstrap заново.
+      - notion_proxy_search_data:/var/lib/notion-proxy-search-mcp
     depends_on:
       postgres:
         condition: service_healthy
@@ -191,6 +201,10 @@ volumes:
   one_zenwallet_data:
     driver: local
   gocardless_data:
+    driver: local
+  receipts_data:
+    driver: local
+  notion_proxy_search_data:
     driver: local
 
 networks:
