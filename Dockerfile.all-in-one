@@ -94,10 +94,8 @@ ARG RECEIPTS_MCP_COMMIT=f5f028a6cbc7b1e7e33d51c3a647d7a56993f588
 
 # david-dvinskykh/notion-proxy-search-mcp — зеркало Notion в SQLite с локальным
 # гибридным поиском (int8-эмбеддинги + BM25 + обход связей). Go, только stdio,
-# без cgo. Пин стоит на ветке claude/notion-mcp-proxy-vector-search-jrilq2, а не
-# на main, поэтому ночной автобамп его не двигает — так же, как у
-# ZENMONEY_DDVIN_COMMIT (см. комментарий в scripts/bump_pins.py). После мерджа
-# ветки в main пин станет обычной строкой в PINS.
+# без cgo. Пин двигает ночной автобамп (scripts/bump_pins.py) по main
+# репозитория, как у остальных компонентов.
 ARG NOTION_PROXY_SEARCH_MCP_REPO=https://github.com/david-dvinskykh/notion-proxy-search-mcp
 ARG NOTION_PROXY_SEARCH_MCP_COMMIT=bd4f89a2d62a54dc3b1f7f764b65d984c4e04fa1
 
