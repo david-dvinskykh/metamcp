@@ -190,13 +190,6 @@ jobs:
             METAMCP_BASE=${{ inputs.metamcp_base || 'source' }}
             METAMCP_REPO=${{ github.server_url }}/${{ github.repository }}.git
             METAMCP_COMMIT=${{ inputs.ref || github.sha }}
-          # notion-proxy-search-mcp — единственный приватный исходник в этом
-          # образе, и GITHUB_TOKEN на чужой репозиторий прав не даёт. Отдельный
-          # fine-grained PAT с Contents: Read-only лежит в секретах репозитория
-          # как NOTION_PROXY_SEARCH_TOKEN; секретом BuildKit он доезжает до
-          # стадии, не попадая ни в слой образа, ни в лог сборки.
-          secrets: |
-            notion_proxy_search_token=${{ secrets.NOTION_PROXY_SEARCH_TOKEN }}
           cache-from: type=gha,scope=all-in-one-arm64
           # ignore-error: кэш GitHub Actions ограничен 10 ГБ, слепок сборки
           # в него может не влезть — это не повод валить сборку.

@@ -97,7 +97,7 @@ ARG RECEIPTS_MCP_COMMIT=f5f028a6cbc7b1e7e33d51c3a647d7a56993f588
 # без cgo. Пин двигает ночной автобамп (scripts/bump_pins.py) по main
 # репозитория, как у остальных компонентов.
 ARG NOTION_PROXY_SEARCH_MCP_REPO=https://github.com/david-dvinskykh/notion-proxy-search-mcp
-ARG NOTION_PROXY_SEARCH_MCP_COMMIT=bd4f89a2d62a54dc3b1f7f764b65d984c4e04fa1
+ARG NOTION_PROXY_SEARCH_MCP_COMMIT=ff66d0619ded2c666bbf9913313e68dbf06ffe0f
 
 # Контрольная точка эмбеддингов, из которой собирается весовой блоб. Ревизия
 # запинена сознательно: смена модели меняет все векторы в зеркале, поэтому она
@@ -107,7 +107,7 @@ ARG NOTION_PROXY_SEARCH_MCP_COMMIT=bd4f89a2d62a54dc3b1f7f764b65d984c4e04fa1
 #
 # Именно на этой ревизии сделаны замеры в docs/DESIGN.ru.md: блоб 118,7 МБ,
 # худший косинус против float32-экспорта того же чекпойнта 0,99811, токенизатор
-# совпадает с эталонным на 255 из 255 случаев. Двигать ревизию — значит
+# совпадает с эталонным на 448 из 448 случаев. Двигать ревизию — значит
 # перепроверять эти три числа.
 ARG NOTION_SEARCH_MODEL_REPO=intfloat/multilingual-e5-small
 ARG NOTION_SEARCH_MODEL_REVISION=614241f622f53c4eeff9890bdc4f31cfecc418b3
@@ -611,25 +611,13 @@ ARG NOTION_SEARCH_MODEL_REPO
 ARG NOTION_SEARCH_MODEL_REVISION
 ARG TARGETARCH=""
 
-# Репозиторий сервера приватный — в отличие от всех остальных исходников этого
-# образа, которые клонируются анонимно. Токен приходит секретом BuildKit и
-# читается git'ом через credential helper: сама команда токена не содержит,
-# поэтому `set -x` его не печатает в лог сборки, а файл секрета лежит в
-# /run/secrets только на время этого RUN и в слой не попадает.
-#
-# Секрет прокидывает воркфлоу из переменной репозитория METAMCP:
-# NOTION_PROXY_SEARCH_TOKEN — fine-grained PAT с единственным правом
-# Contents: Read-only на david-dvinskykh/notion-proxy-search-mcp. Без него
-# стадия падает сразу с понятным текстом, а не на «could not read Username».
+# Репозиторий сервера публичный, как и все остальные исходники этого образа,
+# поэтому клон анонимный и никаких секретов сборке не нужно. Берётся ровно
+# запиненный коммит: git fetch по SHA вместо клона ветки, чтобы сборка не
+# зависела от того, что в репозитории успело смениться.
 WORKDIR /src
-RUN --mount=type=secret,id=notion_proxy_search_token \
-    set -eux; \
-    test -s /run/secrets/notion_proxy_search_token || { \
-      echo "нет секрета notion_proxy_search_token: нужен fine-grained PAT с Contents: Read-only на ${NOTION_PROXY_SEARCH_MCP_REPO}" >&2; \
-      exit 1; \
-    }; \
+RUN set -eux; \
     git init -q .; \
-    git config credential.helper '!f() { echo username=x-access-token; echo "password=$(cat /run/secrets/notion_proxy_search_token)"; }; f'; \
     git remote add origin "${NOTION_PROXY_SEARCH_MCP_REPO}"; \
     git fetch -q --depth 1 origin "${NOTION_PROXY_SEARCH_MCP_COMMIT}"; \
     git checkout -q FETCH_HEAD; \
