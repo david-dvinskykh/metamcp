@@ -116,6 +116,10 @@ PINS = [
         "RECEIPTS_MCP_COMMIT",
         lambda: git_head("https://github.com/david-dvinskykh/recipt-fetcher-mcp", "refs/heads/main"),
     ),
+    Pin(
+        "NOTION_PROXY_SEARCH_MCP_COMMIT",
+        lambda: git_head("https://github.com/david-dvinskykh/notion-proxy-search-mcp", "refs/heads/main"),
+    ),
     Pin("INSTAGRAM_DM_VERSION", lambda: npm_latest("mcp-instagram-dm")),
     Pin("ZENMONEY_NPM_VERSION", lambda: npm_latest("zenmoney-mcp")),
     Pin(
@@ -150,6 +154,11 @@ PINS = [
 # claude/zenmoney-mcp-version-update-6t44bk, not on main, and main does not
 # carry the reminder tools. Following the default branch would silently
 # downgrade the server. Bump it by hand.
+#
+# NOTION_SEARCH_MODEL_REVISION stays pinned by hand on purpose and must never be
+# auto-bumped: changing the checkpoint invalidates every stored vector, and the
+# board needs hours to recompute them. The measurements in that repository's
+# docs/DESIGN.ru.md are tied to the pinned revision as well.
 
 
 def stage_span(text: str, stage: str) -> tuple[int, int]:

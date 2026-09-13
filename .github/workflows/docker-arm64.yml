@@ -231,6 +231,7 @@ jobs:
             command -v mcp-server-fetch
             command -v curl-mcp
             command -v receipts-mcp
+            command -v notion-proxy-search-mcp
             command -v portainer-mcp
             command -v lightpanda
             command -v lightpanda-mcp
@@ -270,6 +271,15 @@ jobs:
             # должно быть записываемым, иначе шифрованный файл ключей не создать
             receipts-mcp -version
             test -w /var/lib/receipts-mcp
+            # notion-proxy-search-mcp — Go-бинарник плюс весовой блоб рядом.
+            # Блоб проверяем по магии и размеру: COPY из билдера может доехать
+            # обрезанным, и тогда сервер поднимется, а поиск молча останется
+            # только на BM25. Зеркало и сокет демона живут в каталоге данных,
+            # он обязан быть записываемым.
+            notion-proxy-search-mcp version
+            head -c 8 /usr/local/lib/notion-proxy-search-mcp/model.npse | grep -q NPSE
+            test "$(stat -c%s /usr/local/lib/notion-proxy-search-mcp/model.npse)" -gt 100000000
+            test -w /var/lib/notion-proxy-search-mcp
             node /usr/local/lib/zenmoney-mcp-ddvin/build/index.js --help >/dev/null 2>&1 || true
             test -f /usr/local/lib/zenmoney-mcp-ddvin/build/index.js
             test -f /usr/local/lib/gocardless-mcp/build/index.js
@@ -333,6 +343,27 @@ jobs:
           grep -q '"name":"lightpanda"' /tmp/lp.out
           grep -q '"name":"markdown"' /tmp/lp.out
           ! grep -q 'scope=telemetry' /tmp/lp.err
+
+          # notion-proxy-search-mcp: stdio-сервер поверх локального зеркала.
+          # Токена Notion в CI нет, и он не нужен: без него serve поднимает
+          # пустое зеркало и отдаёт инструменты — ровно это и проверяем, плюс
+          # NPS_NO_DAEMON=1, чтобы процесс не пытался отпочковать демона
+          # синхронизации. Инструменты перечисляем по именам: они и есть
+          # контракт с MetaMCP, и выпадение любого из них — регрессия.
+          docker run --rm -i \
+            -e NPS_NO_DAEMON=1 \
+            --entrypoint notion-proxy-search-mcp "$IMAGE" > /tmp/nps.out 2> /tmp/nps.err <<'JSONRPC' || true
+          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}
+          {"jsonrpc":"2.0","method":"notifications/initialized"}
+          {"jsonrpc":"2.0","id":2,"method":"tools/list"}
+          JSONRPC
+          head -c 300 /tmp/nps.out
+          cat /tmp/nps.err
+          grep -q '"name":"notion-proxy-search"' /tmp/nps.out
+          for tool in notion-search notion-fetch notion-query-data-sources \
+                      notion-list-data-sources notion-recall notion-mirror-status notion-resync; do
+            grep -q "\"$tool\"" /tmp/nps.out
+          done
 
           # Патч таймаута прокси Next.js живёт в node_modules, который pnpm
           # в рантайм-стадии может пересобрать. Проверяем, что 600000 доехало
