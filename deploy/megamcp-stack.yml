@@ -13,9 +13,9 @@
 #
 # Пакет в GHCR публичный, поэтому watchtower ходит в реестр анонимно —
 # REPO_USER/REPO_PASS не нужны. То же требуется и от образа самого watchtower
-# (ghcr.io/david-dvinskykh/watchtower): новый пакет в GHCR создаётся приватным,
-# и после первой сборки его нужно один раз переключить в Public — иначе ни
-# Portainer его не скачает, ни watchtower не обновит сам себя.
+# (ghcr.io/david-dvinskykh/container-updater): новый пакет в GHCR создаётся
+# приватным, и после первой сборки его нужно один раз переключить в Public —
+# иначе ни Portainer его не скачает, ни watchtower не обновит сам себя.
 #
 # Как выкатить (шаг, который делается руками — в Portainer, не из этой репы):
 #   Stacks -> megamcp -> Editor -> вставить этот файл -> включить
@@ -149,7 +149,16 @@ services:
     # только пушем в main, то есть руками и осознанно. Если захочется вернуть
     # пин — тот же воркфлоу публикует теги sha-<короткий-хэш>, пин ставится на
     # такой тег и двигается руками после проверки сборки.
-    image: ghcr.io/david-dvinskykh/watchtower:latest
+    #
+    # Имя образа НЕ watchtower намеренно: на этом же демоне живёт Home
+    # Assistant, и его Supervisor уводит систему в unhealthy
+    # (unhealthy_system_docker — блокируются установка аддонов и обновления
+    # Core/OS), если последний сегмент имени образа начинается с watchtower,
+    # ouroboros или portainer (UNHEALTHY_IMAGES в
+    # supervisor/resolution/evaluations/container.py). Сравнивается имя
+    # ОБРАЗА, не контейнера: megamcp-watchtower можно оставить, образ —
+    # переименовывать обратно нельзя.
+    image: ghcr.io/david-dvinskykh/container-updater:latest
     container_name: megamcp-watchtower
     restart: always
     # Список, а не строка: в расписании есть пробелы, и при строчной форме
