@@ -99,13 +99,18 @@ ARG RECEIPTS_MCP_COMMIT=f5f028a6cbc7b1e7e33d51c3a647d7a56993f588
 # ZENMONEY_DDVIN_COMMIT (см. комментарий в scripts/bump_pins.py). После мерджа
 # ветки в main пин станет обычной строкой в PINS.
 ARG NOTION_PROXY_SEARCH_MCP_REPO=https://github.com/david-dvinskykh/notion-proxy-search-mcp
-ARG NOTION_PROXY_SEARCH_MCP_COMMIT=5c33b24d6fb890b149e960632d0c59306b342372
+ARG NOTION_PROXY_SEARCH_MCP_COMMIT=bd4f89a2d62a54dc3b1f7f764b65d984c4e04fa1
 
 # Контрольная точка эмбеддингов, из которой собирается весовой блоб. Ревизия
 # запинена сознательно: смена модели меняет все векторы в зеркале, поэтому она
 # не должна происходить от того, что на Hugging Face обновили ветку. Сервер
 # пишет имя модели рядом с каждым вектором и пересчитывает их сам, если имя
 # изменилось, — но считать будет час на плате.
+#
+# Именно на этой ревизии сделаны замеры в docs/DESIGN.ru.md: блоб 118,7 МБ,
+# худший косинус против float32-экспорта того же чекпойнта 0,99811, токенизатор
+# совпадает с эталонным на 255 из 255 случаев. Двигать ревизию — значит
+# перепроверять эти три числа.
 ARG NOTION_SEARCH_MODEL_REPO=intfloat/multilingual-e5-small
 ARG NOTION_SEARCH_MODEL_REVISION=614241f622f53c4eeff9890bdc4f31cfecc418b3
 
@@ -624,8 +629,9 @@ RUN set -eux; \
     test -x /out/notion-proxy-search-mcp
 
 # Контрольная точка весит 470 МБ в float32; в образ попадает только
-# квантованный блоб (~118 МБ). convert делает самопроверку — грузит блоб обратно
-# и требует единичный вектор, — поэтому битый блоб валит сборку здесь.
+# квантованный блоб (118,7 МБ, проверено). convert делает самопроверку — грузит
+# блоб обратно и требует единичный вектор, — поэтому битый блоб валит сборку
+# здесь. Сама конвертация занимает около 5 секунд на x86-раннере.
 RUN set -eux; \
     mkdir -p /tmp/model; \
     for name in config.json tokenizer.json model.safetensors; do \
@@ -814,9 +820,13 @@ COPY --from=receipts-mcp-builder /out/receipts-mcp /usr/local/lib/receipts-mcp/r
 # грузит вовсе, поэтому параллельные сессии не умножают 118 МБ.
 #
 # Каталог данных под томом: иначе при каждом пересоздании контейнера зеркало
-# собиралось бы заново, а это обход всего воркспейса и час счёта эмбеддингов.
+# собиралось бы заново, а это обход всего воркспейса и часы счёта эмбеддингов.
 # NPS_EMBED_WORKERS=2 в конфигурации сервера оставляет половину ядер остальным
-# контейнерам на время первичной индексации.
+# контейнерам на время первичной индексации, а NPS_EMBED_SKIP_SOURCES держит
+# 🗓️ Журнал вне векторного индекса: 111 карточек дня (одна — 135 799 знаков)
+# дают порядка 1,7 млн токенов против 250 тысяч во всех остальных базах вместе,
+# а ищут их по дате и точной строке, то есть SQL и BM25. Подробности и числа —
+# в docs/DESIGN.ru.md проксируемого репозитория.
 COPY --from=notion-proxy-search-builder /out/notion-proxy-search-mcp /usr/local/lib/notion-proxy-search-mcp/notion-proxy-search-mcp
 COPY --from=notion-proxy-search-builder /out/model.npse /usr/local/lib/notion-proxy-search-mcp/model.npse
 
