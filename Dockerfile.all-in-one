@@ -53,7 +53,7 @@ ARG PNPM_VERSION=10.29.3
 # chigwell/telegram-mcp @ main на 2026-07-27 12:47 (PR #168, exposed-tools-allowlist).
 # У ветки нет тегов и она активно движется — без пина пересборка молча меняет
 # версию сервера.
-ARG TELEGRAM_MCP_COMMIT=5d7f0a79f717badf75e67f727217f8bd590cb874
+ARG TELEGRAM_MCP_COMMIT=fe16901942898202ac018dee1a84c60d101a3a54
 
 # david-dvinskykh/better-telegram-mcp — форк, а не PyPI-релиз n24q02m: именно
 # его звал конфиг сервера в MetaMCP (`uvx --from git+...@main`), и в нём есть
@@ -97,7 +97,7 @@ ARG RECEIPTS_MCP_COMMIT=f5f028a6cbc7b1e7e33d51c3a647d7a56993f588
 # без cgo. Пин двигает ночной автобамп (scripts/bump_pins.py) по main
 # репозитория, как у остальных компонентов.
 ARG NOTION_PROXY_SEARCH_MCP_REPO=https://github.com/david-dvinskykh/notion-proxy-search-mcp
-ARG NOTION_PROXY_SEARCH_MCP_COMMIT=b5ab8b879d2283daba024c3cfc207749a478c128
+ARG NOTION_PROXY_SEARCH_MCP_COMMIT=ea96d5436749c1a2e32b06cd1230c681e53d755d
 
 # Контрольная точка эмбеддингов, из которой собирается весовой блоб. Ревизия
 # запинена сознательно: смена модели меняет все векторы в зеркале, поэтому она
