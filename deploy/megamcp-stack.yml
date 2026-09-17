@@ -56,6 +56,16 @@ services:
       APP_URL: ${APP_URL:-http://localhost:8034}
       NEXT_PUBLIC_APP_URL: ${APP_URL:-http://localhost:8034}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-your-super-secret-key-change-this-in-production}
+      # Регистрация. Бэкенд переписывает DISABLE_SIGNUP / DISABLE_SSO_SIGNUP в
+      # базе из этих переменных при КАЖДОМ старте (bootstrap.service.ts,
+      # «Registration controls (applied every run)»), поэтому выключение
+      # тумблером в UI живёт только до следующего рестарта. Инстанс смотрит
+      # наружу (ddvin-mcp.ha-dvin.pp.ua), а зарегистрировавшийся человек
+      # получает собственные MCP-серверы в том же контейнере — 11.09.2026
+      # именно так чужой аккаунт оказался на телеграм-сессии Дэвида.
+      # Дефолт здесь true: снимать защиту нужно осознанно, в stack.env.
+      BOOTSTRAP_DISABLE_REGISTRATION_UI: ${BOOTSTRAP_DISABLE_REGISTRATION_UI:-true}
+      BOOTSTRAP_DISABLE_REGISTRATION_SSO: ${BOOTSTRAP_DISABLE_REGISTRATION_SSO:-true}
       TRANSFORM_LOCALHOST_TO_DOCKER_INTERNAL: ${TRANSFORM_LOCALHOST_TO_DOCKER_INTERNAL:-true}
       # Прямой перенос файлов (Telegram -> Google Drive) внутри MetaMCP.
       # Переменные из stack.env сами в контейнер не попадают: compose берёт их
