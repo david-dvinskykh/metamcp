@@ -67,7 +67,7 @@ ARG TELEGRAM_MCP_COMMIT=c95e136f5f852f4ce6f400dc03d0d9f6ef0b4e42
 # Этот же коммит собирает и Go-версию (стадия better-telegram-go-builder): один
 # форк, одна ветка, один пин — обе сборки всегда из одного исходника.
 ARG BETTER_TELEGRAM_MCP_REPO=https://github.com/david-dvinskykh/better-telegram-mcp
-ARG BETTER_TELEGRAM_MCP_COMMIT=91b026b5ccdf139b3d8fdf8db0b30a902ea8be0e
+ARG BETTER_TELEGRAM_MCP_COMMIT=39f9eed045aae126a47c7a8f700d09341726abbe
 
 # modelcontextprotocol/servers, пакет mcp-server-fetch. Ставится в образ, чтобы
 # конфиг сервера в MetaMCP звал готовую консольную команду вместо `uvx`.
