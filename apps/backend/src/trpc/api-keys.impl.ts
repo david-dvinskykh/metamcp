@@ -15,6 +15,7 @@ import logger from "@/utils/logger";
 
 import { ApiKeysRepository } from "../db/repositories";
 import { ApiKeysSerializer } from "../db/serializers";
+import { resolveOwnership } from "../lib/ownership";
 
 const apiKeysRepository = new ApiKeysRepository();
 
@@ -24,8 +25,16 @@ export const apiKeysImplementations = {
     userId: string,
   ): Promise<z.infer<typeof CreateApiKeyResponseSchema>> => {
     try {
-      // Use input.user_id if provided, otherwise default to current user (private)
-      const apiKeyUserId = input.user_id !== undefined ? input.user_id : userId;
+      // A key issued into another user's account would authenticate as that
+      // user, so the owner comes from the session: absent means mine, null
+      // means public, a named owner has to be me.
+      const ownership = resolveOwnership(input.user_id, userId);
+      if (!ownership.ok) {
+        // This response carries the key itself and has no failure shape, so a
+        // refusal is an error rather than a body the caller has to inspect.
+        throw new Error(ownership.message);
+      }
+      const apiKeyUserId = ownership.userId;
 
       const result = await apiKeysRepository.create({
         name: input.name,

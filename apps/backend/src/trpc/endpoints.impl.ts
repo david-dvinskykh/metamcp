@@ -18,6 +18,7 @@ import {
   namespacesRepository,
 } from "../db/repositories";
 import { EndpointsSerializer } from "../db/serializers";
+import { resolveOwnership } from "../lib/ownership";
 
 const apiKeysRepository = new ApiKeysRepository();
 
@@ -36,9 +37,12 @@ export const endpointsImplementations = {
         };
       }
 
-      // Determine user ownership based on input.user_id or default to current user
-      const effectiveUserId =
-        input.user_id !== undefined ? input.user_id : userId;
+      // Ownership comes from the session, not from the request body.
+      const ownership = resolveOwnership(input.user_id, userId);
+      if (!ownership.ok) {
+        return { success: false as const, message: ownership.message };
+      }
+      const effectiveUserId = ownership.userId;
       const isPublicEndpoint = effectiveUserId === null;
 
       // Validate namespace accessibility and relationship rules

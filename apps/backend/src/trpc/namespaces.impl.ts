@@ -33,6 +33,7 @@ import {
   mapOverrideNameToOriginal,
 } from "../lib/metamcp/metamcp-middleware/tool-overrides.functional";
 import { metaMcpServerPool } from "../lib/metamcp/metamcp-server-pool";
+import { resolveOwnership } from "../lib/ownership";
 
 export const namespacesImplementations = {
   create: async (
@@ -40,9 +41,12 @@ export const namespacesImplementations = {
     userId: string,
   ): Promise<z.infer<typeof CreateNamespaceResponseSchema>> => {
     try {
-      // Determine user ownership based on input.user_id or default to current user
-      const effectiveUserId =
-        input.user_id !== undefined ? input.user_id : userId;
+      // Ownership comes from the session, not from the request body.
+      const ownership = resolveOwnership(input.user_id, userId);
+      if (!ownership.ok) {
+        return { success: false as const, message: ownership.message };
+      }
+      const effectiveUserId = ownership.userId;
       const isPublicNamespace = effectiveUserId === null;
 
       // Validate server accessibility and relationship rules
@@ -335,9 +339,17 @@ export const namespacesImplementations = {
         };
       }
 
-      // Determine the effective ownership for validation (use input.user_id if provided, otherwise existing)
-      const effectiveUserId =
-        input.user_id !== undefined ? input.user_id : existingNamespace.user_id;
+      // Same rule on update: keep the current owner unless the caller names
+      // itself or makes the namespace public.
+      const ownership = resolveOwnership(
+        input.user_id,
+        userId,
+        existingNamespace.user_id,
+      );
+      if (!ownership.ok) {
+        return { success: false as const, message: ownership.message };
+      }
+      const effectiveUserId = ownership.userId;
       const isPublicNamespace = effectiveUserId === null;
 
       // Validate server accessibility and relationship rules if servers are being updated
@@ -383,7 +395,7 @@ export const namespacesImplementations = {
         uuid: input.uuid,
         name: input.name,
         description: input.description,
-        user_id: input.user_id,
+        user_id: effectiveUserId,
         mcpServerUuids: input.mcpServerUuids,
       });
 

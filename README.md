@@ -623,8 +623,14 @@ MetaMCP by hand.
    The last two are what make the created server actually run under MetaMCP. The session lives
    in a file the server locks while it runs, and MetaMCP starts one process per connection, so
    an exclusive lock would leave every process after the first exiting as if it had crashed.
-   The session name is the connector's own name, so two accounts connected from one deployment
-   never share a session file.
+   The session file is addressed by data directory plus session name, so the owner is part of
+   that address: each user gets a subdirectory of the deployment's `TELEGRAM_DATA_DIR` (and,
+   when the deployment sets none, a session name prefixed with their user id). Within one
+   account the session keeps the connector's own name, which is what lets somebody run a
+   personal and a work account side by side. Without the owner in the address two users who
+   both keep the default name land on one session file, and — because the server seeds a
+   session string only into an empty file — the second one's tools answer as the first one's
+   Telegram account.
 
 The session string is written in Telethon's own `StringSession` format, so it also drops
 straight into a Python Telegram MCP server.
@@ -636,7 +642,7 @@ straight into a Python Telegram MCP server.
 | --- | --- |
 | `TELEGRAM_API_ID` | The application's numeric ID. |
 | `TELEGRAM_API_HASH` | The application's 32-character hex hash. |
-| `TELEGRAM_DATA_DIR` | Optional. Passed to the created server as its data directory, so the session file survives a container being replaced. Unset, the server uses `~/.better-telegram-mcp` and re-seeds the session from the session string. |
+| `TELEGRAM_DATA_DIR` | Optional. The root each created server's data directory is taken from (the server gets `<root>/u-<user id>`), so the session file survives a container being replaced and no two users share one. Unset, the server uses `~/.better-telegram-mcp` and the owner moves into the session name instead. |
 
 With both set, every user of this MetaMCP only has to scan a QR — and the `api_hash` never
 leaves the backend. Set only one of the two and the dialog says so rather than quietly falling

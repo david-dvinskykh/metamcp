@@ -25,6 +25,7 @@ import { clearOverrideCache } from "../lib/metamcp/metamcp-middleware/tool-overr
 import { metaMcpServerPool } from "../lib/metamcp/metamcp-server-pool";
 import { serverErrorTracker } from "../lib/metamcp/server-error-tracker";
 import { convertDbServerToParams } from "../lib/metamcp/utils";
+import { resolveOwnership } from "../lib/ownership";
 import { persistPreRegisteredOAuthClient } from "./pre-registered-oauth";
 
 export const mcpServersImplementations = {
@@ -33,9 +34,13 @@ export const mcpServersImplementations = {
     userId: string,
   ): Promise<z.infer<typeof CreateMcpServerResponseSchema>> => {
     try {
-      // Determine user ownership based on input.user_id or default to current user
-      const effectiveUserId =
-        input.user_id !== undefined ? input.user_id : userId;
+      // Ownership comes from the session, not from the request body: a named
+      // owner is honoured only when it is the caller's own id.
+      const ownership = resolveOwnership(input.user_id, userId);
+      if (!ownership.ok) {
+        return { success: false as const, message: ownership.message };
+      }
+      const effectiveUserId = ownership.userId;
 
       const { oauth_client_info: oauthClientInfo, ...serverInput } = input;
 
@@ -388,9 +393,13 @@ export const mcpServersImplementations = {
         };
       }
 
-      // Determine user ownership based on input.user_id or keep existing ownership
-      const effectiveUserId =
-        input.user_id !== undefined ? input.user_id : server.user_id;
+      // Same rule on update: keep the current owner unless the caller names
+      // itself or makes the server public.
+      const ownership = resolveOwnership(input.user_id, userId, server.user_id);
+      if (!ownership.ok) {
+        return { success: false as const, message: ownership.message };
+      }
+      const effectiveUserId = ownership.userId;
 
       const { oauth_client_info: oauthClientInfo, ...serverInput } = input;
 

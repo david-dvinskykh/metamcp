@@ -13,6 +13,7 @@ import { z } from "zod";
 import logger from "@/utils/logger";
 
 import { mcpServersRepository } from "../db/repositories";
+import { resolveOwnership } from "../lib/ownership";
 import {
   resolveEnvApiCredentials,
   resolveEnvDataDir,
@@ -140,7 +141,11 @@ export const telegramImplementations = {
   ): Promise<z.infer<typeof CreateMcpServerResponseSchema>> => {
     // Names are unique per owner. Checking before the login is consumed keeps
     // it alive, so a taken name costs a new name rather than a new QR scan.
-    const owner = input.user_id !== undefined ? input.user_id : userId;
+    const ownership = resolveOwnership(input.user_id, userId);
+    if (!ownership.ok) {
+      return { success: false as const, message: ownership.message };
+    }
+    const owner = ownership.userId;
     const taken = await mcpServersRepository.findByNameAndUserId(
       input.name,
       owner,
@@ -188,6 +193,10 @@ export const telegramImplementations = {
           apiHash: credentials.apiHash,
           sessionString: credentials.sessionString,
           serverName: input.name,
+          // The owner is part of the session address: without it two users who
+          // keep the default server name share one session file, and the
+          // second one ends up working as the first one's Telegram account.
+          ownerId: owner,
           dataDir: resolveEnvDataDir(),
         }),
         user_id: input.user_id,
