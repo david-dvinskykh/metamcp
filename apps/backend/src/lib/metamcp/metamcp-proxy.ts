@@ -43,6 +43,7 @@ import {
 } from "../file-relay";
 import { ConnectedClient } from "./client";
 import { withServerSessionDeadline } from "./connect-deadline";
+import { principalFromAuth } from "./connection-identity";
 import { getMcpServers } from "./fetch-metamcp";
 import { extractForwardedHeaders, mergeHeaders } from "./header-forwarding";
 import { requestWithSessionRecovery } from "./list-handler-recovery";
@@ -176,6 +177,17 @@ export const createServer = async (
     endpointName: requestContext?.endpointName || "unknown",
     auth: requestContext?.auth,
   };
+
+  // Bind this session to the account that opened it before anything touches
+  // the connection pool. The pool refuses to hand a live upstream connection
+  // between accounts, and this is where it learns which one this session is.
+  // Handlers deeper in carry only the session id, so binding here is what
+  // keeps them from falling back to a session-private identity and opening a
+  // second connection for every server.
+  mcpServerPool.bindSessionPrincipal(
+    sessionId,
+    principalFromAuth(requestContext?.auth, requestContext?.endpointName),
+  );
 
   // Original List Tools Handler
   const originalListToolsHandler: ListToolsHandler = async (

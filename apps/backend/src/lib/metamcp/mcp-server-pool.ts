@@ -4,6 +4,12 @@ import logger from "@/utils/logger";
 
 import { configService } from "../config.service";
 import { ConnectedClient, connectMetaMcpClient } from "./client";
+import {
+  ConnectionIdentity,
+  connectionIdentity,
+  mayShare,
+  unclaimedIdentity,
+} from "./connection-identity";
 import { serverRequiresForwardedHeaders } from "./header-forwarding";
 import { metamcpLogStore } from "./log-store";
 import { serverErrorTracker } from "./server-error-tracker";
@@ -24,6 +30,16 @@ export class McpServerPool {
   // Idle sessions: serverUuid -> ConnectedClient (no sessionId assigned yet)
   private idleSessions: Record<string, ConnectedClient> = {};
 
+  // Who each live connection belongs to and what it was opened with.
+  //
+  // MetaMCP serves several users from one process, and a pooled connection is
+  // handed between sessions in two places: the idle pool and the at-cap reuse
+  // path. Both consult this map, so a connection opened for one account, or
+  // with one client's forwarded headers, can never be given to another. A
+  // WeakMap keeps it from holding connections alive on its own.
+  private connectionIdentities: WeakMap<ConnectedClient, ConnectionIdentity> =
+    new WeakMap();
+
   // Active sessions: sessionId -> Record<serverUuid, ConnectedClient>
   private activeSessions: Record<string, Record<string, ConnectedClient>> = {};
 
@@ -32,6 +48,11 @@ export class McpServerPool {
 
   // Session creation timestamps: sessionId -> timestamp
   private sessionTimestamps: Record<string, number> = {};
+
+  // Account each session acts as, remembered from the first call that knew it
+  // so later calls on the same session cannot silently fall back to a wider
+  // identity than the one the session was opened with.
+  private sessionPrincipals: Record<string, string> = {};
 
   // Server parameters cache: serverUuid -> ServerParameters
   private serverParamsCache: Record<string, ServerParameters> = {};
@@ -109,20 +130,33 @@ export class McpServerPool {
    * reported 5/5 for servers (medkarta, a STREAMABLE_HTTP server with no child
    * process at all) that were nowhere near five connections.
    */
-  private countConnectionsForServer(serverUuid: string): number {
+  private countConnectionsForServer(
+    serverUuid: string,
+    principal?: string,
+  ): number {
     const distinct = new Set<ConnectedClient>();
+
+    const counts = (client: ConnectedClient | undefined): boolean => {
+      if (!client) return false;
+      if (principal === undefined) return true;
+      // The cap is a per-account quota: one user's traffic must not spend
+      // another's. A connection whose owner we cannot establish is counted
+      // against everyone, which is the conservative direction.
+      const identity = this.connectionIdentities.get(client);
+      return identity === undefined || identity.principal === principal;
+    };
 
     // Count idle session
     const idle = this.idleSessions[serverUuid];
-    if (idle) {
-      distinct.add(idle);
+    if (counts(idle)) {
+      distinct.add(idle as ConnectedClient);
     }
 
     // Count active sessions across all sessionIds
     for (const sessionServers of Object.values(this.activeSessions)) {
       const client = sessionServers[serverUuid];
-      if (client) {
-        distinct.add(client);
+      if (counts(client)) {
+        distinct.add(client as ConnectedClient);
       }
     }
 
@@ -134,6 +168,57 @@ export class McpServerPool {
     }
 
     return count;
+  }
+
+  /**
+   * The account a session already acts as.
+   *
+   * Call sites that cannot name the requester (internal probes, the tRPC test
+   * connection) get an identity private to their own session, so an unnamed
+   * caller can never be pooled together with a named account.
+   */
+  private principalForSession(sessionId: string): string {
+    return this.sessionPrincipals[sessionId] ?? `session:${sessionId}`;
+  }
+
+  /**
+   * Record which account a session acts as, from the authenticated request
+   * that opened it.
+   *
+   * Handlers call this before touching the pool, so the inner call sites that
+   * only carry a session id still resolve to the right account instead of
+   * falling back to a session-private identity.
+   *
+   * A session keeps the first account it was bound to. Re-binding is refused
+   * rather than obeyed: whatever produced a second identity for one session,
+   * the connections already opened belong to the first, and quietly moving
+   * them is the one outcome that must not happen.
+   */
+  bindSessionPrincipal(sessionId: string, principal: string): void {
+    const existing = this.sessionPrincipals[sessionId];
+    if (existing === undefined) {
+      this.sessionPrincipals[sessionId] = principal;
+      return;
+    }
+    if (existing !== principal) {
+      logger.warn(
+        `Session ${sessionId} presented account ${principal} but is bound to ${existing}; keeping the original binding`,
+      );
+    }
+  }
+
+  /**
+   * Record that `client` now belongs to `wanted`.
+   *
+   * Claiming an unclaimed pre-warmed connection is what makes it that
+   * account's; re-stamping an already-claimed one keeps the map in step when a
+   * connection legitimately moves between that account's own sessions.
+   */
+  private claimConnection(
+    client: ConnectedClient,
+    wanted: ConnectionIdentity,
+  ): void {
+    this.connectionIdentities.set(client, wanted);
   }
 
   /**
@@ -162,11 +247,16 @@ export class McpServerPool {
   /**
    * Check if we can create another connection for a specific server
    */
-  private canCreateConnectionForServer(serverUuid: string): boolean {
-    const count = this.countConnectionsForServer(serverUuid);
+  private canCreateConnectionForServer(
+    serverUuid: string,
+    principal?: string,
+  ): boolean {
+    const count = this.countConnectionsForServer(serverUuid, principal);
     if (count >= this.maxConnectionsPerServer) {
       logger.warn(
-        `Per-server connection limit reached for ${serverUuid}: ${count}/${this.maxConnectionsPerServer}`,
+        `Per-server connection limit reached for ${serverUuid}${
+          principal ? ` (account ${principal})` : ""
+        }: ${count}/${this.maxConnectionsPerServer}`,
       );
       return false;
     }
@@ -178,6 +268,7 @@ export class McpServerPool {
    */
   private findOldestActiveConnectionForServer(
     serverUuid: string,
+    wanted: ConnectionIdentity,
   ): ConnectedClient | undefined {
     let oldestSessionId: string | undefined;
     let oldestTimestamp = Infinity;
@@ -185,7 +276,15 @@ export class McpServerPool {
     for (const [sessionId, sessionServers] of Object.entries(
       this.activeSessions,
     )) {
-      if (sessionServers[serverUuid]) {
+      const candidate = sessionServers[serverUuid];
+      // Only a connection another session could equally have opened itself:
+      // same account, same upstream, same credentials, and not carrying one
+      // client's forwarded headers. Anything else stays where it is, and the
+      // caller spawns its own rather than borrowing someone else's.
+      if (
+        candidate &&
+        mayShare(this.connectionIdentities.get(candidate), wanted)
+      ) {
         const timestamp = this.sessionTimestamps[sessionId] || Infinity;
         if (timestamp < oldestTimestamp) {
           oldestTimestamp = timestamp;
@@ -208,9 +307,17 @@ export class McpServerPool {
     serverUuid: string,
     params: ServerParameters,
     namespaceUuid?: string,
+    principal?: string,
   ): Promise<ConnectedClient | undefined> {
     // Update server params cache
     this.serverParamsCache[serverUuid] = params;
+
+    // Who this connection would belong to, and what it would be opened with.
+    // Everything below that could hand out somebody else's live connection is
+    // gated on this rather than on the server uuid alone.
+    const actingPrincipal = principal ?? this.principalForSession(sessionId);
+    const wanted = connectionIdentity(serverUuid, actingPrincipal, params);
+    this.sessionPrincipals[sessionId] = actingPrincipal;
 
     // Check if we already have an active session for this sessionId and server
     if (this.activeSessions[sessionId]?.[serverUuid]) {
@@ -227,13 +334,15 @@ export class McpServerPool {
     }
 
     // Check if we have an idle session for this server that we can convert.
-    // Skip idle reuse for servers with forward_headers since each client may
-    // need unique credentials forwarded to the backend MCP server.
-    if (!serverRequiresForwardedHeaders(params)) {
-      const idleClient = this.idleSessions[serverUuid];
-      if (idleClient) {
+    // Only when the pooled connection is one this caller could equally have
+    // opened itself: same account, same credentials, and not carrying another
+    // client's forwarded headers.
+    const idleClient = this.idleSessions[serverUuid];
+    if (idleClient) {
+      if (mayShare(this.connectionIdentities.get(idleClient), wanted)) {
         // Convert idle session to active session
         delete this.idleSessions[serverUuid];
+        this.claimConnection(idleClient, wanted);
         this.activeSessions[sessionId][serverUuid] = idleClient;
         this.sessionToServers[sessionId].add(serverUuid);
 
@@ -246,26 +355,41 @@ export class McpServerPool {
 
         return idleClient;
       }
+      logger.info(
+        `Idle connection for server ${serverUuid} belongs to another account or credential set; opening a separate one for session ${sessionId}`,
+      );
     }
 
-    // No idle session available — check per-server cap before spawning
-    if (!this.canCreateConnectionForServer(serverUuid)) {
-      // At cap: reuse the oldest active connection instead of spawning
-      const reusable = this.findOldestActiveConnectionForServer(serverUuid);
+    // No idle session available — check this account's cap before spawning
+    if (!this.canCreateConnectionForServer(serverUuid, actingPrincipal)) {
+      // At cap: reuse the oldest active connection of the same identity
+      const reusable = this.findOldestActiveConnectionForServer(
+        serverUuid,
+        wanted,
+      );
       if (reusable) {
         logger.info(
-          `Reusing existing connection for server ${serverUuid} (at per-server cap ${this.maxConnectionsPerServer})`,
+          `Reusing existing connection for server ${serverUuid} (at per-account cap ${this.maxConnectionsPerServer})`,
         );
+        this.claimConnection(reusable, wanted);
         this.activeSessions[sessionId][serverUuid] = reusable;
         this.sessionToServers[sessionId].add(serverUuid);
         return reusable;
       }
+      // At cap with nothing shareable. Spawning anyway would let one account
+      // exceed its quota; refusing is what the cap is for, and the caller
+      // reports the server as unavailable for this session.
+      logger.warn(
+        `No connection available for server ${serverUuid}: account ${actingPrincipal} is at its cap and holds nothing shareable`,
+      );
+      return undefined;
     }
 
     const newClient = await this.createNewConnection(params, namespaceUuid);
     if (!newClient) {
       return undefined;
     }
+    this.claimConnection(newClient, wanted);
 
     // Re-check after the async gap: a concurrent getSession() call for the same
     // (sessionId, serverUuid) pair may have stored a connection while we were awaiting
@@ -399,6 +523,10 @@ export class McpServerPool {
           currentGeneration === generation
         ) {
           this.idleSessions[serverUuid] = newClient;
+          this.connectionIdentities.set(
+            newClient,
+            unclaimedIdentity(serverUuid, params),
+          );
           logger.info(`Created idle session for server ${serverUuid}`);
           metamcpLogStore.addLog(
             params.name,
@@ -463,6 +591,10 @@ export class McpServerPool {
           currentGeneration === generation
         ) {
           this.idleSessions[serverUuid] = newClient;
+          this.connectionIdentities.set(
+            newClient,
+            unclaimedIdentity(serverUuid, params),
+          );
           logger.info(
             `Created background idle session for server [${params.name}] ${serverUuid}`,
           );
@@ -554,8 +686,28 @@ export class McpServerPool {
         continue;
       }
 
+      const identity = this.connectionIdentities.get(client);
+      if (identity && !identity.shareable) {
+        // Carries one client's forwarded headers. The idle pool is shared, so
+        // this connection can only be closed, never parked for a later caller.
+        try {
+          await client.cleanup();
+        } catch (error) {
+          logger.error(
+            `Error closing per-client connection for server ${serverUuid}:`,
+            error,
+          );
+        }
+        destroyed++;
+        continue;
+      }
+
       if (!this.idleSessions[serverUuid]) {
-        // No idle session for this server — recycle the connection
+        // No idle session for this server — recycle the connection, and leave
+        // it owned by the account that just used it. A used connection carries
+        // that account's MCP session state, so it goes back into the pool for
+        // them to pick up again, not for whoever asks next. Only a connection
+        // pre-warmed before any request is ever unclaimed.
         this.idleSessions[serverUuid] = client;
         recycled++;
         logger.info(
@@ -577,6 +729,7 @@ export class McpServerPool {
 
     // Clean up session timestamp
     delete this.sessionTimestamps[sessionId];
+    delete this.sessionPrincipals[sessionId];
 
     // Clean up session to servers mapping
     delete this.sessionToServers[sessionId];
@@ -608,6 +761,7 @@ export class McpServerPool {
     this.activeSessions = {};
     this.sessionToServers = {};
     this.sessionTimestamps = {};
+    this.sessionPrincipals = {};
     this.serverParamsCache = {};
 
     // Bump all known generations (never reset to {}) so any in-flight idle
