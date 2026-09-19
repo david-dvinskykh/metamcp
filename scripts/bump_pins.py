@@ -122,6 +122,14 @@ PINS = [
     ),
     Pin("INSTAGRAM_DM_VERSION", lambda: npm_latest("mcp-instagram-dm")),
     Pin("ZENMONEY_NPM_VERSION", lambda: npm_latest("zenmoney-mcp")),
+    # The fork is built from git, not from npm: its releases stall on the npm
+    # token, while main is where the tools actually land. It followed no ref at
+    # all until 19.09.2026, because main then lagged behind a working branch;
+    # main has carried everything since.
+    Pin(
+        "ZENMONEY_DDVIN_COMMIT",
+        lambda: git_head("https://github.com/david-dvinskykh/zenmoney-mcp-Ddvin", "refs/heads/main"),
+    ),
     Pin(
         "ONE_ZENWALLET_COMMIT",
         lambda: git_head("https://github.com/david-dvinskykh/one-zenwallet", "HEAD"),
@@ -150,11 +158,6 @@ PINS = [
     ),
 ]
 
-# ZENMONEY_DDVIN_COMMIT is deliberately absent: it points at a commit on
-# claude/zenmoney-mcp-version-update-6t44bk, not on main, and main does not
-# carry the reminder tools. Following the default branch would silently
-# downgrade the server. Bump it by hand.
-#
 # NOTION_SEARCH_MODEL_REVISION stays pinned by hand on purpose and must never be
 # auto-bumped: changing the checkpoint invalidates every stored vector, and the
 # board needs hours to recompute them. The measurements in that repository's
