@@ -122,7 +122,7 @@ ARG ZENMONEY_NPM_VERSION=0.4.0
 # claude/zenmoney-mcp-version-update-6t44bk, не в main; GitHub отдаёт его по
 # SHA, потому что он достижим из ветки.
 # В npm пакет так и не выложен (registry отдаёт 404), поэтому собираем из git.
-ARG ZENMONEY_DDVIN_COMMIT=90e8cad4477c6283edaae35b723b6585d1801a17
+ARG ZENMONEY_DDVIN_COMMIT=182480f19544903142c3c5e6cc22313caafa0859
 
 # david-dvinskykh/one-zenwallet @ main на 2026-07-31 («Support running the MCP
 # server via npx»). Репозиторий активно движется, тегов нет — пин по коммиту.
