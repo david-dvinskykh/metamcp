@@ -331,3 +331,67 @@ describe("what may be inherited from the idle pool", () => {
     expect(aliceAgain).toBe(alicesConnection);
   });
 });
+
+describe("operator control over the quota", () => {
+  const withEnv = async (value: string | undefined, run: () => void) => {
+    const previous = process.env.MAX_CONNECTIONS_PER_SERVER;
+    if (value === undefined) delete process.env.MAX_CONNECTIONS_PER_SERVER;
+    else process.env.MAX_CONNECTIONS_PER_SERVER = value;
+    (McpServerPool as unknown as { instance: unknown }).instance = null;
+    try {
+      run();
+    } finally {
+      if (previous === undefined) delete process.env.MAX_CONNECTIONS_PER_SERVER;
+      else process.env.MAX_CONNECTIONS_PER_SERVER = previous;
+      (McpServerPool as unknown as { instance: unknown }).instance = null;
+    }
+  };
+
+  const capOf = (instance: McpServerPool) =>
+    (instance as unknown as { maxConnectionsPerServer: number })
+      .maxConnectionsPerServer;
+
+  it("defaults to five per account", async () => {
+    await withEnv(undefined, () => {
+      expect(capOf(McpServerPool.getInstance())).toBe(5);
+    });
+  });
+
+  it("takes the quota from MAX_CONNECTIONS_PER_SERVER", async () => {
+    await withEnv("12", () => {
+      expect(capOf(McpServerPool.getInstance())).toBe(12);
+    });
+  });
+
+  it("ignores a nonsensical value rather than disabling the quota", async () => {
+    for (const bad of ["0", "-3", "not-a-number"]) {
+      await withEnv(bad, () => {
+        expect(capOf(McpServerPool.getInstance())).toBe(5);
+      });
+    }
+  });
+});
+
+describe("a session cannot change the account it acts as", () => {
+  it("ignores a later call that names a different account", async () => {
+    const alices = await pool.getSession("s-1", SERVER, params(), "ns", ALICE);
+
+    // Same session id, now presenting Bob. The binding must hold, or the
+    // connections this session already owns would move to Bob with it.
+    await pool.getSession("s-1", SERVER, params(), "ns", BOB);
+
+    expect(internals.sessionPrincipals["s-1"]).toBe(ALICE);
+    expect(
+      internals.connectionIdentities.get(alices as object)?.principal,
+    ).toBe(ALICE);
+  });
+
+  it("still lets a later call bind an account the first one did not know", async () => {
+    // An unnamed call must not pin the session to a session-private identity,
+    // or the account's own pooled connections become unreachable to it.
+    await pool.getSession("s-1", SERVER, params(), "ns");
+    pool.bindSessionPrincipal("s-1", ALICE);
+
+    expect(internals.sessionPrincipals["s-1"]).toBe(ALICE);
+  });
+});

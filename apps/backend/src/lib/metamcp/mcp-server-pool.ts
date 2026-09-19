@@ -109,10 +109,25 @@ export class McpServerPool {
     if (!McpServerPool.instance) {
       const envMax = parseInt(process.env.MAX_TOTAL_CONNECTIONS || "", 10);
       const maxConn = Number.isFinite(envMax) && envMax > 0 ? envMax : 100;
+      // Per-server is now a per-account quota, so an install with several
+      // users hits it sooner than a single-user one did: each account gets
+      // this many connections to the same server rather than all of them
+      // sharing the allowance. It is also a hard limit — a server with
+      // per-client forwarded headers cannot pool its connections at all, so
+      // an account past the quota is refused rather than quietly exceeding
+      // it. MAX_CONNECTIONS_PER_SERVER is how an operator raises it.
+      const envPerServer = parseInt(
+        process.env.MAX_CONNECTIONS_PER_SERVER || "",
+        10,
+      );
+      const perServer =
+        Number.isFinite(envPerServer) && envPerServer > 0
+          ? envPerServer
+          : maxConnectionsPerServer;
       McpServerPool.instance = new McpServerPool(
         defaultIdleCount,
         maxConn,
-        maxConnectionsPerServer,
+        perServer,
       );
     }
     return McpServerPool.instance;
@@ -315,9 +330,18 @@ export class McpServerPool {
     // Who this connection would belong to, and what it would be opened with.
     // Everything below that could hand out somebody else's live connection is
     // gated on this rather than on the server uuid alone.
-    const actingPrincipal = principal ?? this.principalForSession(sessionId);
+    // Bind on the first call that names an account, and from then on act as
+    // whatever the session was bound to. Writing the binding here directly
+    // would defeat bindSessionPrincipal's first-binding-wins rule: a later
+    // call naming a different account could move the session, and with it the
+    // connections it already holds. A caller that names nobody falls back to
+    // an identity private to its own session, which is never stored, so a
+    // later call that does know the account can still bind it.
+    if (principal !== undefined) {
+      this.bindSessionPrincipal(sessionId, principal);
+    }
+    const actingPrincipal = this.principalForSession(sessionId);
     const wanted = connectionIdentity(serverUuid, actingPrincipal, params);
-    this.sessionPrincipals[sessionId] = actingPrincipal;
 
     // Check if we already have an active session for this sessionId and server
     if (this.activeSessions[sessionId]?.[serverUuid]) {
