@@ -27,6 +27,18 @@ export interface MetaMCPHandlerContext {
      * no owner (`user_id` null) leaves it undefined.
      */
     endpointUserId?: string;
+    /**
+     * The signed-in user behind a browser session, set by the web UI's MCP
+     * proxy routes, which authenticate by cookie rather than by API key or
+     * OAuth token.
+     *
+     * Deliberately a field of its own rather than reusing apiKeyUserId:
+     * resolveRelayCaller() reads the other three to decide whose stored
+     * credentials the file relay may use, and an inspector session must not
+     * silently gain that reach. It is used only to tell one account's pooled
+     * upstream connections from another's.
+     */
+    sessionUserId?: string;
   };
 }
 

@@ -16,6 +16,18 @@ const metamcpRouter = express.Router();
 // Apply better auth middleware to all metamcp routes
 metamcpRouter.use(betterAuthMcpMiddleware);
 
+/**
+ * The signed-in user betterAuthMcpMiddleware put on the request.
+ *
+ * The middleware rejects the request outright when there is no valid session,
+ * so by the time a handler runs this is present; it stays optional because the
+ * middleware types the property loosely.
+ */
+const signedInUserId = (req: express.Request): string | undefined => {
+  const user = (req as express.Request & { user?: { id?: string } }).user;
+  return typeof user?.id === "string" ? user.id : undefined;
+};
+
 const webAppTransports: Map<string, Transport> = new Map<string, Transport>(); // Web app transports by sessionId
 const metamcpServers: Map<
   string,
@@ -30,11 +42,20 @@ const createMetaMcpServer = async (
   namespaceUuid: string,
   sessionId: string,
   includeInactiveServers: boolean = false,
+  sessionUserId?: string,
 ) => {
   const { server, cleanup } = await createServer(
     namespaceUuid,
     sessionId,
     includeInactiveServers,
+    undefined,
+    // These routes authenticate by cookie, so the signed-in user is the only
+    // thing that names the caller. Without it every inspector session of every
+    // user would be unnamed, and the connection pool would keep them apart one
+    // session at a time instead of one account at a time.
+    sessionUserId
+      ? { endpointName: "", auth: { method: "none", sessionUserId } }
+      : undefined,
   );
   return { server, cleanup };
 };
@@ -112,6 +133,7 @@ metamcpRouter.post("/:uuid/mcp", async (req, res) => {
               namespaceUuid,
               newSessionId,
               includeInactiveServers,
+              signedInUserId(req),
             );
             logger.info(
               `Created MetaMCP server instance for session ${newSessionId}`,
@@ -215,6 +237,7 @@ metamcpRouter.get("/:uuid/sse", async (req, res) => {
       namespaceUuid,
       sessionId,
       includeInactiveServers,
+      signedInUserId(req),
     );
     logger.info(`Created MetaMCP server instance for session ${sessionId}`);
 

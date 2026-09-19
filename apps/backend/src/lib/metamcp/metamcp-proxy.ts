@@ -184,10 +184,18 @@ export const createServer = async (
   // Handlers deeper in carry only the session id, so binding here is what
   // keeps them from falling back to a session-private identity and opening a
   // second connection for every server.
-  mcpServerPool.bindSessionPrincipal(
-    sessionId,
-    principalFromAuth(requestContext?.auth, requestContext?.endpointName),
+  //
+  // When nothing names the caller the session is left unbound on purpose: it
+  // then gets an identity private to itself and shares with nobody. Binding a
+  // placeholder instead would put every such session into one bucket and let
+  // the pool treat unrelated accounts as the same one.
+  const sessionPrincipal = principalFromAuth(
+    requestContext?.auth,
+    requestContext?.endpointName,
   );
+  if (sessionPrincipal) {
+    mcpServerPool.bindSessionPrincipal(sessionId, sessionPrincipal);
+  }
 
   // Original List Tools Handler
   const originalListToolsHandler: ListToolsHandler = async (

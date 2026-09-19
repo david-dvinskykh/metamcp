@@ -47,6 +47,7 @@ export interface RequestAuth {
   apiKeyUserId?: string;
   oauthUserId?: string;
   endpointUserId?: string;
+  sessionUserId?: string;
 }
 
 /**
@@ -58,21 +59,30 @@ export interface RequestAuth {
  * with the same stored credentials, so they may share with each other — but
  * never with a different endpoint, and never with a named user.
  *
- * Every value is prefixed by its kind so the fallback cannot collide with a
- * real user id.
+ * Every value is prefixed by its kind so one form cannot collide with
+ * another, and null is returned when the caller cannot be named at all —
+ * never a placeholder, which would pool unrelated sessions together.
  */
 export function principalFromAuth(
   auth: RequestAuth | undefined,
   endpointName: string | undefined,
-): string {
-  const userId = auth?.apiKeyUserId || auth?.oauthUserId;
+): string | null {
+  const userId = auth?.apiKeyUserId || auth?.oauthUserId || auth?.sessionUserId;
   if (userId) {
     return `user:${userId}`;
   }
-  if (auth?.endpointUserId) {
-    return `endpoint-owner:${auth.endpointUserId}@${endpointName ?? ""}`;
+  if (auth?.endpointUserId && endpointName) {
+    return `endpoint-owner:${auth.endpointUserId}@${endpointName}`;
   }
-  return `endpoint:${endpointName ?? "unknown"}`;
+  if (endpointName) {
+    return `endpoint:${endpointName}`;
+  }
+  // Nothing names this caller. Returning a placeholder here would be the
+  // worst outcome available: every such session would share one principal and
+  // the pool would consider them the same account. The caller leaves the
+  // session unbound instead, and it falls back to an identity private to
+  // itself.
+  return null;
 }
 
 /**

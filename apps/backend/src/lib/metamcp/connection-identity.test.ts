@@ -51,6 +51,38 @@ describe("principalFromAuth", () => {
     expect(principal).not.toBe("user:u-3");
   });
 
+  it("names the signed-in user behind a browser session", () => {
+    expect(
+      principalFromAuth({ method: "none", sessionUserId: "u-9" }, ""),
+    ).toBe("user:u-9");
+  });
+
+  it("names nobody rather than inventing a shared placeholder", () => {
+    // The web UI's MCP proxy has no endpoint and, before this returned null,
+    // every inspector session of every user bound to one constant string and
+    // the pool treated them as the same account.
+    expect(principalFromAuth(undefined, undefined)).toBeNull();
+    expect(principalFromAuth({ method: "none" }, undefined)).toBeNull();
+    expect(principalFromAuth({ method: "none" }, "")).toBeNull();
+  });
+
+  it("does not let an endpoint's name collide with the unnamed case", () => {
+    // An endpoint really called "unknown" used to land in the same bucket as
+    // every caller that could not be named at all.
+    expect(principalFromAuth({ method: "none" }, "unknown")).toBe(
+      "endpoint:unknown",
+    );
+    expect(principalFromAuth(undefined, undefined)).not.toBe(
+      "endpoint:unknown",
+    );
+  });
+
+  it("falls back to the endpoint itself when an owner has no endpoint name", () => {
+    expect(
+      principalFromAuth({ method: "none", endpointUserId: "u-3" }, undefined),
+    ).toBeNull();
+  });
+
   it("keeps anonymous callers of different endpoints apart", () => {
     expect(principalFromAuth({ method: "none" }, "endpoint-a")).not.toBe(
       principalFromAuth({ method: "none" }, "endpoint-b"),
