@@ -98,22 +98,35 @@ export class McpServerPool {
   }
 
   /**
-   * Count all connections (idle + active + pending) for a specific server UUID
+   * Count all connections (idle + active + pending) for a specific server UUID.
+   *
+   * The cap exists to bound spawned upstream processes, so what is counted is
+   * distinct ConnectedClients, not references to them. One connection can be
+   * referenced by several sessions: findOldestActiveConnectionForServer() hands
+   * the same client to every session that arrives while the cap is reached.
+   * Counting references made that self-reinforcing — each share pushed the
+   * count up, which forced the next session to share as well, and the pool
+   * reported 5/5 for servers (medkarta, a STREAMABLE_HTTP server with no child
+   * process at all) that were nowhere near five connections.
    */
   private countConnectionsForServer(serverUuid: string): number {
-    let count = 0;
+    const distinct = new Set<ConnectedClient>();
 
     // Count idle session
-    if (this.idleSessions[serverUuid]) {
-      count += 1;
+    const idle = this.idleSessions[serverUuid];
+    if (idle) {
+      distinct.add(idle);
     }
 
     // Count active sessions across all sessionIds
     for (const sessionServers of Object.values(this.activeSessions)) {
-      if (sessionServers[serverUuid]) {
-        count += 1;
+      const client = sessionServers[serverUuid];
+      if (client) {
+        distinct.add(client);
       }
     }
+
+    let count = distinct.size;
 
     // Count pending idle creation
     if (this.creatingIdleSessions.has(serverUuid)) {
@@ -121,6 +134,29 @@ export class McpServerPool {
     }
 
     return count;
+  }
+
+  /**
+   * True when some session other than excludeSessionId still holds this exact
+   * connection, or it is the server's current idle entry.
+   */
+  private isConnectionStillReferenced(
+    serverUuid: string,
+    client: ConnectedClient,
+    excludeSessionId: string,
+  ): boolean {
+    if (this.idleSessions[serverUuid] === client) {
+      return true;
+    }
+    for (const [sessionId, sessionServers] of Object.entries(
+      this.activeSessions,
+    )) {
+      if (sessionId === excludeSessionId) continue;
+      if (sessionServers[serverUuid] === client) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -499,9 +535,25 @@ export class McpServerPool {
 
     let recycled = 0;
     let destroyed = 0;
+    let shared = 0;
+
+    // Drop this session's claim first, so the reference check below cannot see
+    // the session being cleaned up as another holder of its own connections.
+    delete this.activeSessions[sessionId];
 
     // Try to recycle each connection back to idle pool
     for (const [serverUuid, client] of Object.entries(activeSession)) {
+      // A connection handed to several sessions by the per-server cap belongs
+      // to all of them. Closing it here killed the process out from under the
+      // sessions still using it — and when the first cleanup had already put it
+      // in the idle pool, the second cleanup destroyed the pool's own entry,
+      // leaving a corpse that only the health-check ping discovered. Leave a
+      // still-referenced connection alone; the last holder will deal with it.
+      if (this.isConnectionStillReferenced(serverUuid, client, sessionId)) {
+        shared++;
+        continue;
+      }
+
       if (!this.idleSessions[serverUuid]) {
         // No idle session for this server — recycle the connection
         this.idleSessions[serverUuid] = client;
@@ -523,9 +575,6 @@ export class McpServerPool {
       }
     }
 
-    // Remove from active sessions
-    delete this.activeSessions[sessionId];
-
     // Clean up session timestamp
     delete this.sessionTimestamps[sessionId];
 
@@ -533,7 +582,7 @@ export class McpServerPool {
     delete this.sessionToServers[sessionId];
 
     logger.info(
-      `Cleaned up session ${sessionId} (recycled: ${recycled}, destroyed: ${destroyed})`,
+      `Cleaned up session ${sessionId} (recycled: ${recycled}, destroyed: ${destroyed}, still shared: ${shared})`,
     );
   }
 

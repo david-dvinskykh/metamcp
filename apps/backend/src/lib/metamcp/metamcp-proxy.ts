@@ -395,17 +395,30 @@ export const createServer = async (
               );
 
               if (toolsToSave.length > 0) {
-                // Update cache
-                toolsSyncCache.update(mcpServerUuid, toolNames);
-
-                // Sync with cleanup
+                // Sync with cleanup FIRST, then record the hash. Updating the
+                // cache before the write meant a single failed sync poisoned
+                // the process: the hash already claimed "synced", so every
+                // later tools/list reported UNCHANGED and never retried, and
+                // the table kept whatever stale rows it had until a restart.
+                // That is how curl's row stayed at the single `fetch` tool the
+                // server was named after before it was replaced.
                 await toolsImplementations.sync({
                   tools: toolsToSave,
                   mcpServerUuid: mcpServerUuid,
                 });
+
+                toolsSyncCache.update(mcpServerUuid, toolNames);
+              } else {
+                // Nothing to save because every tool is an override. Record the
+                // hash anyway, or filterOutOverrideTools runs its queries again
+                // on every single tools/list for as long as the process lives.
+                toolsSyncCache.update(mcpServerUuid, toolNames);
               }
             }
           } catch (dbError) {
+            // Leave the cache untouched so the next tools/list retries instead
+            // of assuming the table matches what the upstream just reported.
+            toolsSyncCache.clear(mcpServerUuid);
             logger.error(
               `Error syncing tools to database for server ${serverName}:`,
               dbError,

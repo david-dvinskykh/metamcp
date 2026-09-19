@@ -97,7 +97,7 @@ ARG RECEIPTS_MCP_COMMIT=f5f028a6cbc7b1e7e33d51c3a647d7a56993f588
 # без cgo. Пин двигает ночной автобамп (scripts/bump_pins.py) по main
 # репозитория, как у остальных компонентов.
 ARG NOTION_PROXY_SEARCH_MCP_REPO=https://github.com/david-dvinskykh/notion-proxy-search-mcp
-ARG NOTION_PROXY_SEARCH_MCP_COMMIT=ea96d5436749c1a2e32b06cd1230c681e53d755d
+ARG NOTION_PROXY_SEARCH_MCP_COMMIT=d5d7789a67e044cfafef45f294b69c00d06cc42f
 
 # Контрольная точка эмбеддингов, из которой собирается весовой блоб. Ревизия
 # запинена сознательно: смена модели меняет все векторы в зеркале, поэтому она
