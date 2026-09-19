@@ -239,3 +239,35 @@ describe("ToolsSyncCache", () => {
     });
   });
 });
+
+describe("retry after a failed sync", () => {
+  it("does not claim a server is synced until the write succeeded", async () => {
+    // The proxy records the hash only after toolsImplementations.sync() returns,
+    // and clears it if the write threw. Recording it first meant one failed
+    // write left the process reporting UNCHANGED forever, and the table kept
+    // its stale rows until the container restarted.
+    const cache = new ToolsSyncCache();
+    const uuid = "server-uuid";
+    const names = ["curl_request", "curl_download", "curl_raw", "curl_version"];
+
+    const syncOnce = async (write: () => Promise<void>) => {
+      if (!cache.hasChanged(uuid, names)) return "skipped";
+      try {
+        await write();
+        cache.update(uuid, names);
+        return "written";
+      } catch {
+        cache.clear(uuid);
+        return "failed";
+      }
+    };
+
+    const failing = () => Promise.reject(new Error("db down"));
+    const ok = () => Promise.resolve();
+
+    expect(await syncOnce(failing)).toBe("failed");
+    // The retry must actually happen rather than short-circuit on the hash.
+    expect(await syncOnce(ok)).toBe("written");
+    expect(await syncOnce(ok)).toBe("skipped");
+  });
+});
