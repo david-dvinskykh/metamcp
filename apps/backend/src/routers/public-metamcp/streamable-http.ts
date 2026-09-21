@@ -74,6 +74,18 @@ function getSafeHeaders(req: express.Request): Record<string, unknown> {
   return headers;
 }
 
+// Keep an in-use session out of the expiry sweep.
+//
+// SESSION_LIFETIME is meant to retire sessions nobody talks to any more, but
+// the timestamp was written once, when the session was created. A client that
+// kept working past the interval was disconnected all the same, and every
+// reconnect built a new session with a new set of upstream processes behind it.
+// Both pools are touched here because each keeps its own timestamp.
+const touchSession = (sessionId: string) => {
+  sessionManager.touchSession(sessionId);
+  metaMcpServerPool.touchSession(sessionId);
+};
+
 // Cleanup function for a specific session
 const cleanupSession = async (
   sessionId: string,
@@ -145,6 +157,7 @@ const handleMcpGet = async (req: express.Request, res: express.Response) => {
       return;
     } else {
       logger.info(`Found session ${sessionId}, handling request`);
+      touchSession(sessionId);
       normalizeStreamableHttpAcceptHeader(req);
       await transport.handleRequest(req, res);
     }
@@ -286,6 +299,7 @@ const handleMcpPost = async (req: express.Request, res: express.Response) => {
         });
       } else {
         logger.info(`Found session ${sessionId}, handling request`);
+        touchSession(sessionId);
         normalizeStreamableHttpAcceptHeader(req);
         res.type("application/json");
         await transport.handleRequest(req, res);

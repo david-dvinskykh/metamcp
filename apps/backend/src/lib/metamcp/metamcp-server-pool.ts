@@ -328,6 +328,23 @@ export class MetaMcpServerPool {
   }
 
   /**
+   * Mark a namespace session as used right now, and pass the touch down to the
+   * connection pool that holds its upstream processes.
+   *
+   * The timestamp is otherwise written once, when getServer() hands the session
+   * its MetaMCP server. Every later tool call goes through the transport, never
+   * through getServer(), so a session in constant use still expired after
+   * SESSION_LIFETIME and took its upstream connections down with it — the
+   * client reconnected and a fresh set of processes was spawned.
+   */
+  touchSession(sessionId: string): void {
+    const activeServer = this.activeServers[sessionId];
+    if (!activeServer) return;
+    this.sessionTimestamps[sessionId] = Date.now();
+    mcpServerPool.touchSession(activeServer.internalSessionId);
+  }
+
+  /**
    * Cleanup a session by sessionId
    */
   async cleanupSession(sessionId: string): Promise<void> {

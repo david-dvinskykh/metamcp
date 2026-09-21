@@ -4,6 +4,7 @@ import { configService } from "./config.service";
 
 export interface SessionLifetimeManager<T> {
   addSession(sessionId: string, session: T): void;
+  touchSession(sessionId: string): void;
   removeSession(sessionId: string): void;
   getSession(sessionId: string): T | undefined;
   getAllSessions(): Map<string, T>;
@@ -33,6 +34,21 @@ export class SessionLifetimeManagerImpl<
 
   addSession(sessionId: string, session: T): void {
     this.sessions.set(sessionId, session);
+    this.sessionTimestamps.set(sessionId, Date.now());
+  }
+
+  /**
+   * Mark a session as used right now.
+   *
+   * Without this the timestamp set by addSession() is never updated, so
+   * SESSION_LIFETIME behaves as a hard TTL: a client that has been talking to
+   * the server for the whole interval is disconnected anyway, reconnects, and
+   * the reconnect spawns a fresh set of upstream processes. Touching on every
+   * request turns the setting into the idle timeout it is documented to be —
+   * the same semantics McpServerPool.getSession() already applies.
+   */
+  touchSession(sessionId: string): void {
+    if (!this.sessions.has(sessionId)) return;
     this.sessionTimestamps.set(sessionId, Date.now());
   }
 

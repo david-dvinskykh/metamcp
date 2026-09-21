@@ -36,6 +36,13 @@ function getRequestContext(
   };
 }
 
+// Keep an in-use session out of the expiry sweep; see the same helper in
+// streamable-http.ts. Both pools keep their own timestamp, so both are touched.
+const touchSession = (sessionId: string) => {
+  sessionManager.touchSession(sessionId);
+  metaMcpServerPool.touchSession(sessionId);
+};
+
 // Cleanup function for a specific session
 const cleanupSession = async (sessionId: string, transport?: Transport) => {
   logger.info(`Cleaning up SSE session ${sessionId}`);
@@ -155,6 +162,7 @@ sseRouter.post(
         res.status(404).end("Session not found");
         return;
       }
+      touchSession(sessionId as string);
       await transport.handlePostMessage(req, res);
     } catch (error) {
       logger.error("Error in public endpoint /message route:", error);

@@ -506,6 +506,20 @@ export class McpServerPool {
   }
 
   /**
+   * Mark a pool session as used right now.
+   *
+   * getSession() already touches the timestamp, but it only runs when a caller
+   * resolves a connection through the pool. Requests that a transport handles
+   * on its own never reach it, so the session ages out under load. Callers that
+   * see traffic for a session call this to keep SESSION_LIFETIME an idle
+   * timeout rather than a hard TTL.
+   */
+  touchSession(sessionId: string): void {
+    if (!this.activeSessions[sessionId]) return;
+    this.sessionTimestamps[sessionId] = Date.now();
+  }
+
+  /**
    * Ensure idle sessions exist for all servers
    */
   async ensureIdleSessions(

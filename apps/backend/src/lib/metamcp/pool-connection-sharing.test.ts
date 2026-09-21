@@ -138,3 +138,22 @@ describe("cleanupSession with a shared connection", () => {
     expect(internals.idleSessions[SERVER]).toBe(idle);
   });
 });
+
+describe("session touch", () => {
+  it("postpones expiry for a session that is still in use", () => {
+    const client = makeClient("a");
+    attach("session-1", client);
+    const created = Date.now() - 4 * 60 * 1000;
+    internals.sessionTimestamps["session-1"] = created;
+
+    pool.touchSession("session-1");
+
+    expect(internals.sessionTimestamps["session-1"]).toBeGreaterThan(created);
+  });
+
+  it("does not resurrect a session the pool no longer holds", () => {
+    pool.touchSession("gone");
+
+    expect(internals.sessionTimestamps["gone"]).toBeUndefined();
+  });
+});
