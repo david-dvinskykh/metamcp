@@ -140,7 +140,7 @@ ARG PORTAINER_MCP_VERSION=0.7.0
 # (`lightpanda mcp`, stdio по умолчанию). 0.3.7 @ 2026-08-16 — последний
 # нумерованный релиз; тег nightly брать нельзя, он переписывается и образ
 # перестаёт быть воспроизводимым.
-ARG LIGHTPANDA_VERSION=0.4.1
+ARG LIGHTPANDA_VERSION=1.0.0
 
 # ===========================================================================
 # base — как в апстриме: uv + Node 20 + pnpm
@@ -323,8 +323,8 @@ ARG LIGHTPANDA_VERSION
 ARG TARGETARCH=""
 
 # SHA256 бинарников релиза 0.3.7, проверены вручную 2026-08-26.
-ARG SHA256_AMD64=1d40801e72c0bc61b2cbd3f3562bcfc46de7b79e0568f33f686b64f2e587610a
-ARG SHA256_ARM64=664775c7f5ab69cc3189954c7f9345e25c167cb4dace016173e629f9a5e82c42
+ARG SHA256_AMD64=aa5a4b8ed53d1e38b3c73f5b2647d0a84a82e6744557f45f9a9c85858aa031c3
+ARG SHA256_ARM64=69791924bcee43b13b224af4c845622c5fe66fdbc1b8143bfaa39ca8f85244f5
 
 # Запуск скачанного бинарника проверяем только при нативной сборке: при
 # кросс-сборке в файле чужой ELF и exec падает на «Exec format error».
