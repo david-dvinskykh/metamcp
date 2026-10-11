@@ -164,12 +164,11 @@ services:
     networks:
       - metamcp-network
 
-  # Вотчер dev-loop'а «AI Bridge Dovira»: держит getUpdates бота, пишет
-  # сообщения группы в инбокс и запускает Routine Claude Code, когда есть
-  # новое и ни одна сессия не держит аренду. Модель не тратит ничего, пока в
-  # группе тихо. Включается DEVLOOP_ENABLED=true — только после того, как
-  # telegram-bot-go в MetaMCP переведён на TELEGRAM_CALLBACK_QUEUE_FILE:
-  # у бота может быть один потребитель getUpdates.
+  # Вотчер dev-loop'а «AI Bridge Dovira»: держит getUpdates своего, отдельного
+  # бота (DEVLOOP_BOT_TOKEN), пишет сообщения группы в инбокс и запускает
+  # Routine Claude Code, когда есть новое и ни одна сессия не держит аренду.
+  # Модель не тратит ничего, пока в группе тихо. Бот отдельный, поэтому с
+  # telegram-bot-go за getUpdates не конкурирует. Включается DEVLOOP_ENABLED=true.
   devloop-watcher:
     container_name: megamcp-devloop-watcher
     image: ghcr.io/david-dvinskykh/metamcp-all-in-one:latest
@@ -179,7 +178,7 @@ services:
       com.centurylinklabs.watchtower.scope: megamcp
     environment:
       DEVLOOP_ENABLED: ${DEVLOOP_ENABLED:-false}
-      TELEGRAM_BOT_TOKEN: ${DEVLOOP_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}
+      TELEGRAM_BOT_TOKEN: ${DEVLOOP_BOT_TOKEN:-}
       DEVLOOP_CHAT_IDS: ${DEVLOOP_CHAT_IDS:--1003928414397}
       # Routine «Dovira dev loop»: id (trig_...) и токен API-триггера
       # (claude.ai/code/routines → Edit → Add another trigger → API).
@@ -188,6 +187,8 @@ services:
       DEVLOOP_DEBOUNCE: ${DEVLOOP_DEBOUNCE:-60s}
       DEVLOOP_MAX_FIRES_PER_HOUR: ${DEVLOOP_MAX_FIRES_PER_HOUR:-20}
       OPS_DATA_DIR: /var/lib/ops-mcp
+      # Нажатия кнопок бота dev-loop'а дублируются сюда для MCP-сервера этого
+      # бота в MetaMCP (TELEGRAM_CALLBACK_QUEUE_FILE с тем же путём).
       TELEGRAM_CALLBACK_QUEUE_FILE: /var/lib/ops-mcp/devloop/callbacks.jsonl
     volumes:
       - ops_mcp_data:/var/lib/ops-mcp

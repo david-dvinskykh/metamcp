@@ -44,9 +44,10 @@ OPS_DATA_DIR=/var/lib/ops-mcp
 Watcher (`devloop-watcher` service in `deploy/megamcp-stack.yml`): `DEVLOOP_ENABLED=true`, `TELEGRAM_BOT_TOKEN`,
 `DEVLOOP_CHAT_IDS`, `DEVLOOP_ROUTINE_ID` (`trig_…`), `DEVLOOP_ROUTINE_TOKEN` (`sk-ant-oat01-…`, generated in
 claude.ai/code/routines → the routine → Edit → Add another trigger → API), `TELEGRAM_CALLBACK_QUEUE_FILE`.
-Enable it only after telegram-bot-go has `TELEGRAM_CALLBACK_QUEUE_FILE=/var/lib/ops-mcp/devloop/callbacks.jsonl`:
-a bot has exactly one `getUpdates` consumer. The bot must be in the group with privacy mode off (BotFather
-`/setprivacy` → Disable) to see ordinary messages.
+The watcher uses its own, dedicated bot (`DEVLOOP_BOT_TOKEN` in stack.env), so it never competes with telegram-bot-go
+for `getUpdates`. Sessions write as that bot through a second better-telegram-mcp-go server in MetaMCP (bot mode, the
+same token, `TELEGRAM_CALLBACK_QUEUE_FILE=/var/lib/ops-mcp/devloop/callbacks.jsonl`, with the `ops_mcp_data` volume).
+The bot must be in the group with privacy mode off (BotFather `/setprivacy` → Disable) to see ordinary messages.
 
 ## Development
 

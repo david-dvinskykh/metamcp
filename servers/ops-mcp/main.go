@@ -62,8 +62,7 @@ func serve(ctx context.Context) error {
 }
 
 func watch(ctx context.Context) error {
-	// Off until David switches telegram-bot-go to the callback queue file:
-	// two getUpdates consumers on one bot token knock each other out.
+	// Off until the dev-loop bot and the routine are set up.
 	if os.Getenv("DEVLOOP_ENABLED") != "true" {
 		log.Print("devloop watcher: disabled (set DEVLOOP_ENABLED=true); idling")
 		<-ctx.Done()
