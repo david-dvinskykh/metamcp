@@ -66,7 +66,7 @@ export const ToolDestinationSchema = z.object({
     .record(z.string(), z.unknown())
     .optional()
     .describe(
-      "Static arguments. Supports {{file.name}}, {{file.mimeType}}, {{file.size}}, {{file.sha256}} and {{env.NAME}}.",
+      "Static arguments. Supports {{file.name}}, {{file.mimeType}}, {{file.size}}, {{file.sha256}}, {{file.url}} (signed download link) and {{env.NAME}}.",
     ),
   contentArgument: z
     .string()
@@ -75,10 +75,11 @@ export const ToolDestinationSchema = z.object({
       "Argument that receives the file payload. Dot notation allowed for nested arguments.",
     ),
   contentEncoding: z
-    .enum(["base64", "dataUrl", "text"])
+    .enum(["base64", "dataUrl", "text", "url"])
     .default("base64")
     .describe(
-      "How to encode the payload for that argument. 'text' only works for textual files.",
+      "How to encode the payload for that argument. 'text' only works for textual files. " +
+        "'url' passes a short-lived signed HTTPS link to the staged file instead of its bytes, for tools that fetch a URL themselves (e.g. Telegram send_photo's file_path_or_url) - the cheapest option for large files.",
     ),
   fileNameArgument: z
     .string()
@@ -164,6 +165,50 @@ export const TransferFileInputSchema = z.object({
 
 export const StageFileInputSchema = z.object({
   source: SourceSchema,
+  downloadLink: z
+    .boolean()
+    .optional()
+    .describe(
+      "Also return a signed downloadUrl, so a sandbox can fetch the bytes with curl instead of through the conversation.",
+    ),
+  linkTtlSeconds: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Lifetime of the download link (default 900 s, never past the staged copy).",
+    ),
+});
+
+export const GetDownloadLinkInputSchema = z.object({
+  handle: z
+    .string()
+    .describe("Handle returned by stage_file or by an upload link."),
+  ttlSeconds: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Lifetime of the link (default 900 s, never past the staged copy).",
+    ),
+});
+
+export const CreateStagingUploadInputSchema = z.object({
+  fileName: z
+    .string()
+    .describe("Name of the file being uploaded, e.g. 'screenshot.png'."),
+  mimeType: z
+    .string()
+    .optional()
+    .describe("MIME type; guessed from the extension when omitted."),
+  ttlSeconds: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("How long the upload link stays usable (default 900 s)."),
 });
 
 export const DeliverFileInputSchema = z.object({
@@ -181,6 +226,9 @@ export type GoogleDriveDestinationInput = z.infer<
   typeof GoogleDriveDestinationSchema
 >;
 export type DestinationInput = z.infer<typeof DestinationSchema>;
+export type CreateStagingUploadInput = z.infer<
+  typeof CreateStagingUploadInputSchema
+>;
 export type CreateDriveUploadSessionInput = z.infer<
   typeof CreateDriveUploadSessionInputSchema
 >;

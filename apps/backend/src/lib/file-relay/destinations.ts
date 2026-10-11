@@ -2,6 +2,7 @@ import logger from "@/utils/logger";
 
 import { FileRelayError } from "./errors";
 import { DriveUploadResult, uploadStagedFileToDrive } from "./google-drive";
+import { canSignLinks, createDownloadLink } from "./links";
 import { sanitizeCallToolResult, SanitizedCallToolResult } from "./sanitize";
 import { DestinationInput, ToolDestinationInput } from "./schemas";
 import { CallToolFn } from "./sources";
@@ -57,7 +58,13 @@ async function deliverToTool(
   destination: ToolDestinationInput,
   callTool: CallToolFn,
 ): Promise<{ name: string; result: SanitizedCallToolResult }> {
-  const vars = buildTemplateVars(file);
+  // A signed link is minted only when it can be (public URL configured) or
+  // must be (contentEncoding "url"); otherwise {{file.url}} stays unknown.
+  const downloadUrl =
+    destination.contentEncoding === "url" || canSignLinks()
+      ? createDownloadLink(file).downloadUrl
+      : undefined;
+  const vars = buildTemplateVars(file, downloadUrl);
   const args = interpolateDeep(
     (destination.arguments ?? {}) as Record<string, unknown>,
     vars,
@@ -66,7 +73,9 @@ async function deliverToTool(
   setAtPath(
     args,
     destination.contentArgument,
-    await encodeFile(file, destination),
+    destination.contentEncoding === "url" && downloadUrl
+      ? downloadUrl
+      : await encodeFile(file, destination),
   );
 
   if (destination.fileNameArgument) {

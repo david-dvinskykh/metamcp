@@ -13,7 +13,13 @@ const app = express();
 
 // Global JSON middleware for non-proxy routes
 app.use((req, res, next) => {
-  if (req.path.startsWith("/mcp-proxy/") || req.path.startsWith("/metamcp/")) {
+  if (
+    req.path.startsWith("/mcp-proxy/") ||
+    req.path.startsWith("/metamcp/") ||
+    // Relay uploads stream the raw body to disk; a JSON file must not be
+    // swallowed (or rejected past 50 MB) by the JSON parser first.
+    req.path.startsWith("/file-relay/upload/")
+  ) {
     // Skip JSON parsing for all MCP proxy routes and public endpoints to allow raw stream access
     next();
   } else {

@@ -9,10 +9,13 @@ import { isFileRelayEnabled } from "./config";
 import { deliverStagedFile, DeliveryResult } from "./destinations";
 import { FileRelayError } from "./errors";
 import { createDriveUploadSession } from "./google-drive";
+import { canSignLinks, createDownloadLink, createUploadLink } from "./links";
 import {
   CreateDriveUploadSessionInputSchema,
+  CreateStagingUploadInputSchema,
   DeliverFileInputSchema,
   DestinationInput,
+  GetDownloadLinkInputSchema,
   SourceInput,
   StageFileInputSchema,
   TransferFileInputSchema,
@@ -72,14 +75,62 @@ const RELAY_TOOLS: FileRelayToolDefinition[] = [
     name: "stage_file",
     description:
       "Download a file into MetaMCP's server-side staging area and return only its metadata (handle, name, MIME type, size, sha256). " +
-      "The bytes stay on the server; pass the handle to metamcp-files__deliver_file to send them on. Staged files expire automatically.",
+      "The bytes stay on the server; pass the handle to metamcp-files__deliver_file to send them on. Staged files expire automatically. " +
+      "With downloadLink: true the reply also carries a signed downloadUrl: fetch it from a sandbox with `curl -fsSo <file> '<downloadUrl>'` to work on the file locally without its bytes ever entering the conversation.",
     inputValidator: StageFileInputSchema,
     handler: async (input, callTool, caller) => {
       const parsed = StageFileInputSchema.parse(input);
       assertNoRelayRecursion(parsed.source);
 
       const file = await resolveSource(parsed.source, callTool, caller);
-      return { staged: summarizeStagedFile(file) };
+      if (!parsed.downloadLink) {
+        return { staged: summarizeStagedFile(file) };
+      }
+      return {
+        staged: summarizeStagedFile(file),
+        ...downloadLinkReply(file, parsed.linkTtlSeconds),
+      };
+    },
+  },
+  {
+    name: "get_download_link",
+    description:
+      "Mint a short-lived signed HTTPS link to an already staged file, so a sandbox can download it with curl (`curl -fsSo <file> '<downloadUrl>'`) instead of receiving base64 in the conversation. " +
+      "The link opens only that one file and never outlives the staged copy.",
+    inputValidator: GetDownloadLinkInputSchema,
+    isAvailable: canSignLinks,
+    handler: async (input) => {
+      const parsed = GetDownloadLinkInputSchema.parse(input);
+      const file = stagingStore.require(parsed.handle);
+      return {
+        staged: summarizeStagedFile(file),
+        ...downloadLinkReply(file, parsed.ttlSeconds),
+      };
+    },
+  },
+  {
+    name: "create_staging_upload",
+    description:
+      "Open a single-use signed upload link into MetaMCP's staging area. Use it when the bytes are in a sandbox (a screenshot, a generated report) and must go to an MCP tool such as Telegram: " +
+      "`curl -fsS -T <file> '<uploadUrl>'` answers with the staged file's JSON (handle included), then metamcp-files__deliver_file sends the handle on - e.g. to a Telegram send_photo tool with contentEncoding 'url'. " +
+      "The bytes never pass through the conversation.",
+    inputValidator: CreateStagingUploadInputSchema,
+    isAvailable: canSignLinks,
+    handler: async (input) => {
+      const parsed = CreateStagingUploadInputSchema.parse(input);
+      const link = createUploadLink({
+        fileName: parsed.fileName,
+        mimeType: parsed.mimeType,
+        ttlSeconds: parsed.ttlSeconds,
+        source: "sandbox upload",
+      });
+      return {
+        ok: true,
+        uploadUrl: link.uploadUrl,
+        expiresAt: link.expiresAt,
+        upload: `curl -fsS -T <file> '${link.uploadUrl}'`,
+        note: "The PUT reply is the staged file's summary ({staged:{handle,...}}). Pass that handle to metamcp-files__deliver_file. The link accepts exactly one upload.",
+      };
     },
   },
   {
@@ -142,6 +193,18 @@ const RELAY_TOOLS: FileRelayToolDefinition[] = [
 const RELAY_TOOLS_BY_NAME = new Map(
   RELAY_TOOLS.map((tool) => [tool.name, tool]),
 );
+
+function downloadLinkReply(
+  file: StagedFile,
+  ttlSeconds: number | undefined,
+): Record<string, unknown> {
+  const link = createDownloadLink(file, ttlSeconds);
+  return {
+    downloadUrl: link.downloadUrl,
+    linkExpiresAt: link.expiresAt,
+    download: `curl -fsSo '${file.fileName.replace(/'/g, "")}' '${link.downloadUrl}'`,
+  };
+}
 
 function buildTransferReport(
   file: StagedFile,

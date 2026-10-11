@@ -7,6 +7,8 @@
 #   telegram-mcp       — chigwell/telegram-mcp (Python, uv sync по uv.lock)
 #   better-telegram-mcp— PyPI-пакет, ставится uv tool install, версия зафиксирована
 #   better-telegram-mcp-go — тот же форк, Go-сборка (stdio), отдельной командой
+#   ops-mcp            — servers/ops-mcp этой репы, Go: SSH к серверам клиники,
+#                        Binotel, инбокс и аренда dev-loop'а + `ops-mcp watch`
 #   mcp-instagram-dm   — npm-пакет, версия зафиксирована
 #   zenmoney-mcp       — npm-пакет zenmoney-mcp, версия зафиксирована
 #   zenmoney-mcp-ddvin — форк david-dvinskykh, сборка по package-lock.json
@@ -411,6 +413,32 @@ RUN set -eux; \
       -o /out/better-telegram-mcp-go ./cmd/better-telegram-mcp; \
     test -x /out/better-telegram-mcp-go
 
+# ===========================================================================
+# ops-mcp-builder — свой Go-сервер из этой же репы (servers/ops-mcp): SSH к
+# серверам клиники, Binotel и вотчер dev-loop'а «AI Bridge Dovira».
+# Берётся из того же коммита METAMCP_REPO, что и сам MetaMCP, — отдельного пина
+# у него нет: правка сервера и правка релея едут одним мерджем в ai-dev.
+# ===========================================================================
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1-trixie AS ops-mcp-builder
+
+ARG METAMCP_REPO
+ARG METAMCP_COMMIT
+ARG TARGETARCH=""
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "${METAMCP_REPO}"; \
+    git fetch -q --depth 1 origin "${METAMCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    cd servers/ops-mcp; \
+    go test ./...; \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags "-s -w -X main.version=${METAMCP_COMMIT}" \
+      -o /out/ops-mcp .; \
+    test -x /out/ops-mcp
+
 FROM node:20-bookworm-slim AS zenmoney-ddvin-builder
 
 ARG ZENMONEY_DDVIN_COMMIT
@@ -751,6 +779,14 @@ RUN set -eux; \
     better-telegram-mcp-go version; \
     better-telegram-mcp-go --help | grep -q 'auth --bot-token'
 
+# --- ops-mcp --------------------------------------------------------------
+# `ops-mcp` — stdio-сервер для MetaMCP (ключи — в env сервера в MetaMCP),
+# `ops-mcp watch` — вотчер dev-loop'а, отдельный сервис стека (megamcp-stack.yml).
+COPY --from=ops-mcp-builder /out/ops-mcp /usr/local/bin/ops-mcp
+RUN set -eux; \
+    chmod 0755 /usr/local/bin/ops-mcp; \
+    ops-mcp version
+
 # --- mcp-server-fetch -----------------------------------------------------
 # Тот же приём, что и с better-telegram-mcp: `uv tool install` кладёт в
 # /usr/local/bin шим с шебангом на питон своего venv, поэтому сервер стартует
@@ -866,8 +902,8 @@ COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpa
 # конфигурации сервера, если телеметрию захочется вернуть.
 #
 RUN set -eux; \
-    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp/downloads /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp; \
-    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp; \
+    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp/downloads /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp /var/lib/ops-mcp/devloop; \
+    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp /var/lib/ops-mcp; \
     \
     printf '%s\n' \
       '#!/bin/sh' \
@@ -987,7 +1023,7 @@ USER nextjs
 
 EXPOSE 12008
 
-VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp", "/var/lib/gocardless-mcp", "/var/lib/receipts-mcp", "/var/lib/notion-proxy-search-mcp"]
+VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp", "/var/lib/gocardless-mcp", "/var/lib/receipts-mcp", "/var/lib/notion-proxy-search-mcp", "/var/lib/ops-mcp"]
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:12008/health || exit 1
