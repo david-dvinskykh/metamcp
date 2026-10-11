@@ -44,6 +44,13 @@ type Event struct {
 	CallbackData string `json:"callback_data,omitempty"`
 }
 
+// Wakes reports whether the event is something a person wrote in the group,
+// which is what wakes the coordinator routine. Presses and bot messages are
+// recorded but do not.
+func (e Event) Wakes() bool {
+	return (e.Kind == "message" || e.Kind == "edited") && !e.FromBot
+}
+
 type Lease struct {
 	SessionID string    `json:"session_id"`
 	Until     time.Time `json:"until"`
@@ -55,14 +62,21 @@ type Lease struct {
 }
 
 type State struct {
-	LastSeq      int64       `json:"last_seq"`
-	TGOffset     int64       `json:"tg_offset"`
-	FiredThrough int64       `json:"fired_through"`
-	HandledUpTo  int64       `json:"handled_up_to"`
-	Fires        []time.Time `json:"fires,omitempty"`
-	Lease        *Lease      `json:"lease,omitempty"`
-	LastFireErr  string      `json:"last_fire_error,omitempty"`
-	LastSession  string      `json:"last_session_url,omitempty"`
+	LastSeq      int64 `json:"last_seq"`
+	TGOffset     int64 `json:"tg_offset"`
+	FiredThrough int64 `json:"fired_through"`
+	HandledUpTo  int64 `json:"handled_up_to"`
+	// Fires are the times of successful routine fires (minimum interval,
+	// hourly cap); failed attempts are not counted.
+	Fires []time.Time `json:"fires,omitempty"`
+	// PendingSince is when the first message not yet fired arrived: the
+	// debounce runs from it.
+	PendingSince time.Time `json:"pending_since,omitempty"`
+	// LastAlertAt keeps health alerts to David at one an hour across restarts.
+	LastAlertAt time.Time `json:"last_alert_at,omitempty"`
+	Lease       *Lease    `json:"lease,omitempty"`
+	LastFireErr string    `json:"last_fire_error,omitempty"`
+	LastSession string    `json:"last_session_url,omitempty"`
 }
 
 type Store struct{ dir string }

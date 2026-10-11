@@ -6,7 +6,7 @@ import (
 )
 
 func testWatchConfig() *WatchConfig {
-	return &WatchConfig{Debounce: time.Minute, MaxWait: 3 * time.Minute, RetryAfter: 30 * time.Minute, MaxFiresHour: 3}
+	return &WatchConfig{Debounce: 20 * time.Second, MinInterval: 120 * time.Second, MaxFiresHour: 3}
 }
 
 func TestStoreAppendAndLease(t *testing.T) {
@@ -52,52 +52,49 @@ func TestStoreAppendAndLease(t *testing.T) {
 
 func TestDecide(t *testing.T) {
 	cfg := testWatchConfig()
-	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
-	ev := func(seq int64, ago time.Duration) Event {
-		return Event{Seq: seq, Kind: "message", Date: now.Add(-ago)}
-	}
+	start := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	msg := func(seq, id int64) Event { return Event{Seq: seq, Kind: "message", ChatID: -100, MessageID: id} }
 
-	if d := decide(State{}, nil, now, cfg); d.Fire {
+	if d := decide(State{}, nil, start, cfg, time.Time{}); d.Fire {
 		t.Fatal("nothing to fire on")
 	}
-	if d := decide(State{}, []Event{ev(1, 10*time.Second)}, now, cfg); d.Fire || d.Reason != "debouncing" {
-		t.Fatalf("fresh message should debounce: %+v", d)
+	pending := State{PendingSince: start}
+	evs := []Event{msg(1, 672), msg(2, 673), msg(3, 675)}
+	if d := decide(pending, evs, start.Add(19*time.Second), cfg, time.Time{}); d.Fire || !d.At.Equal(start.Add(20*time.Second)) {
+		t.Fatalf("must debounce 20 s from the first message: %+v", d)
 	}
-	if d := decide(State{}, []Event{ev(1, 2*time.Minute)}, now, cfg); !d.Fire || d.Through != 1 {
-		t.Fatalf("quiet message should fire: %+v", d)
+	d := decide(pending, evs, start.Add(20*time.Second), cfg, time.Time{})
+	if !d.Fire || d.Through != 3 || wakeText(d.IDs) != "DEVLOOP-WAKE chat=-100 ids=672,673,675 (last=675)" {
+		t.Fatalf("three messages, one fire: %+v %q", d, wakeText(d.IDs))
 	}
-	// A chatty thread still fires once the oldest message waited MaxWait.
-	chatty := []Event{ev(1, 4*time.Minute), ev(2, 5*time.Second)}
-	if d := decide(State{}, chatty, now, cfg); !d.Fire || d.Through != 2 {
-		t.Fatalf("max wait should force a fire: %+v", d)
+
+	// Minimum interval from the last successful fire.
+	fired := State{FiredThrough: 3, Fires: []time.Time{start.Add(20 * time.Second)}, PendingSince: start.Add(30 * time.Second)}
+	next := []Event{msg(4, 676)}
+	if d := decide(fired, next, start.Add(90*time.Second), cfg, time.Time{}); d.Fire || !d.At.Equal(start.Add(140*time.Second)) {
+		t.Fatalf("minimum interval must hold: %+v", d)
 	}
-	// Bot echoes never fire.
-	bot := ev(1, 2*time.Minute)
+	if d := decide(fired, next, start.Add(140*time.Second), cfg, time.Time{}); !d.Fire || d.Through != 4 {
+		t.Fatalf("should fire once the interval has passed: %+v", d)
+	}
+	// Retry delay.
+	if d := decide(fired, next, start.Add(140*time.Second), cfg, start.Add(150*time.Second)); d.Fire {
+		t.Fatal("retry delay must hold")
+	}
+	// Already fired: not pending.
+	if d := decide(State{FiredThrough: 3}, evs, start.Add(time.Hour), cfg, time.Time{}); d.Fire {
+		t.Fatal("fired events must not fire again")
+	}
+	// Bot messages and presses are recorded but never fire.
+	bot := msg(1, 5)
 	bot.FromBot = true
-	if d := decide(State{}, []Event{bot}, now, cfg); d.Fire {
-		t.Fatal("bot messages must not fire")
-	}
-	// A live lease blocks; the session will pick the event up itself.
-	leased := State{Lease: &Lease{SessionID: "s", Until: now.Add(time.Minute)}}
-	if d := decide(leased, []Event{ev(1, 2*time.Minute)}, now, cfg); d.Fire {
-		t.Fatal("lease must block")
-	}
-	// Already fired, session not back yet: wait, then retry after RetryAfter.
-	fired := State{FiredThrough: 1, Fires: []time.Time{now.Add(-5 * time.Minute)}}
-	if d := decide(fired, []Event{ev(1, 6*time.Minute)}, now, cfg); d.Fire {
-		t.Fatal("must wait for the fired session")
-	}
-	fired.Fires = []time.Time{now.Add(-31 * time.Minute)}
-	if d := decide(fired, []Event{ev(1, 32*time.Minute)}, now, cfg); !d.Fire {
-		t.Fatal("should retry a session that never took the lease")
-	}
-	// Handled events are not pending.
-	if d := decide(State{HandledUpTo: 1}, []Event{ev(1, time.Hour)}, now, cfg); d.Fire {
-		t.Fatal("handled events must not fire")
+	press := Event{Seq: 2, Kind: "callback", ChatID: -100, MessageID: 6}
+	if d := decide(State{}, []Event{bot, press}, start.Add(time.Hour), cfg, time.Time{}); d.Fire || d.Through != 2 {
+		t.Fatalf("bot message / press must not fire: %+v", d)
 	}
 	// Hourly budget.
-	budget := State{Fires: []time.Time{now.Add(-50 * time.Minute), now.Add(-40 * time.Minute), now.Add(-35 * time.Minute)}}
-	if d := decide(budget, []Event{ev(1, 2*time.Minute)}, now, cfg); d.Fire {
+	budget := State{Fires: []time.Time{start.Add(-50 * time.Minute), start.Add(-40 * time.Minute), start.Add(-35 * time.Minute)}}
+	if d := decide(budget, []Event{msg(1, 1)}, start, cfg, time.Time{}); d.Fire {
 		t.Fatal("budget spent")
 	}
 }

@@ -150,7 +150,7 @@ func (s *Server) register(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "devloop_lease",
 		Description: "Coordinate dev-loop sessions so only one works on the repo at a time. acquire at the start (refused while another live session holds it), renew every ~30 min with the cursor and a note, " +
-			"release at the end with the last inbox seq you handled - the watcher starts a new session for anything that arrived after it.",
+			"release at the end with the last inbox seq you handled. The lease does not hold back the watcher: every new group message wakes the coordinator routine, which routes it.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in leaseIn) (*mcp.CallToolResult, any, error) {
 		ttl := time.Duration(in.TTLMinutes) * time.Minute
 		if ttl <= 0 {
