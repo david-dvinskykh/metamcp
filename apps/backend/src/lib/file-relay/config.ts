@@ -89,6 +89,17 @@ export function getExposableSecretNames(): string[] {
   return envList("FILE_RELAY_SECRET_ENV");
 }
 
+/**
+ * Public origin used to build signed staging links (download / upload). An
+ * explicit FILE_RELAY_PUBLIC_URL wins over APP_URL, for deployments where the
+ * UI and the relay are published under different hosts.
+ */
+export function getPublicBaseUrl(): string | undefined {
+  const raw =
+    process.env.FILE_RELAY_PUBLIC_URL?.trim() || process.env.APP_URL?.trim();
+  return raw ? raw.replace(/\/+$/, "") : undefined;
+}
+
 /** Truncation budget for text echoed back from a destination tool. */
 export function getMaxResultTextChars(): number {
   return envInt("FILE_RELAY_MAX_RESULT_TEXT_CHARS", DEFAULT_RESULT_TEXT_CHARS);

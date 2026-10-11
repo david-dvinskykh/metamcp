@@ -104,6 +104,12 @@ services:
       FILE_RELAY_SECRET_ENV: ${FILE_RELAY_SECRET_ENV:-}
       FILE_RELAY_LOCAL_PATH_ROOTS: ${FILE_RELAY_LOCAL_PATH_ROOTS:-}
       FILE_RELAY_MAX_RESULT_TEXT_CHARS: ${FILE_RELAY_MAX_RESULT_TEXT_CHARS:-}
+      # Подписанные ссылки релея (get_download_link / create_staging_upload):
+      # облачная сессия качает и заливает файлы curl'ом, мимо контекста.
+      # Публичный адрес — тот, по которому сессии видят MetaMCP снаружи; без
+      # него берётся APP_URL (а он здесь localhost — ссылки были бы мёртвыми).
+      FILE_RELAY_PUBLIC_URL: ${FILE_RELAY_PUBLIC_URL:-https://ddvin-mcp.ha-dvin.pp.ua}
+      FILE_RELAY_LINK_SECRET: ${FILE_RELAY_LINK_SECRET:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -125,6 +131,10 @@ services:
       # образа в 13:43 подменило том 52d4eb08… на пустой 5e185b2d…, и демон
       # начал bootstrap заново.
       - notion_proxy_search_data:/var/lib/notion-proxy-search-mcp
+      # ops-mcp: known_hosts (TOFU), аудит команд и общее с вотчером
+      # состояние dev-loop'а (инбокс, аренда сессии, очередь нажатий кнопок
+      # для telegram-bot-go — TELEGRAM_CALLBACK_QUEUE_FILE).
+      - ops_mcp_data:/var/lib/ops-mcp
     depends_on:
       postgres:
         condition: service_healthy
@@ -151,6 +161,38 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    networks:
+      - metamcp-network
+
+  # Вотчер dev-loop'а «AI Bridge Dovira»: держит getUpdates своего, отдельного
+  # бота (DEVLOOP_BOT_TOKEN), пишет сообщения группы в инбокс и запускает
+  # Routine Claude Code, когда есть новое и ни одна сессия не держит аренду.
+  # Модель не тратит ничего, пока в группе тихо. Бот отдельный, поэтому с
+  # telegram-bot-go за getUpdates не конкурирует. Включается DEVLOOP_ENABLED=true.
+  devloop-watcher:
+    container_name: megamcp-devloop-watcher
+    image: ghcr.io/david-dvinskykh/metamcp-all-in-one:latest
+    entrypoint: ["/usr/local/bin/ops-mcp", "watch"]
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: megamcp
+    environment:
+      DEVLOOP_ENABLED: ${DEVLOOP_ENABLED:-false}
+      TELEGRAM_BOT_TOKEN: ${DEVLOOP_BOT_TOKEN:-}
+      DEVLOOP_CHAT_IDS: ${DEVLOOP_CHAT_IDS:--1003928414397}
+      # Routine «Dovira dev loop»: id (trig_...) и токен API-триггера
+      # (claude.ai/code/routines → Edit → Add another trigger → API).
+      DEVLOOP_ROUTINE_ID: ${DEVLOOP_ROUTINE_ID:-}
+      DEVLOOP_ROUTINE_TOKEN: ${DEVLOOP_ROUTINE_TOKEN:-}
+      DEVLOOP_DEBOUNCE: ${DEVLOOP_DEBOUNCE:-60s}
+      DEVLOOP_MAX_FIRES_PER_HOUR: ${DEVLOOP_MAX_FIRES_PER_HOUR:-20}
+      OPS_DATA_DIR: /var/lib/ops-mcp
+      # Нажатия кнопок бота dev-loop'а дублируются сюда для MCP-сервера этого
+      # бота в MetaMCP (TELEGRAM_CALLBACK_QUEUE_FILE с тем же путём).
+      TELEGRAM_CALLBACK_QUEUE_FILE: /var/lib/ops-mcp/devloop/callbacks.jsonl
+    volumes:
+      - ops_mcp_data:/var/lib/ops-mcp
+    restart: always
     networks:
       - metamcp-network
 
@@ -215,6 +257,8 @@ volumes:
   receipts_data:
     driver: local
   notion_proxy_search_data:
+    driver: local
+  ops_mcp_data:
     driver: local
 
 networks:

@@ -9,13 +9,17 @@ const PLACEHOLDER = /\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g;
 const WHOLE_PLACEHOLDER = /^\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}$/;
 
 /** Variables a destination may reference in its arguments. */
-export function buildTemplateVars(file: StagedFile): TemplateVars {
+export function buildTemplateVars(
+  file: StagedFile,
+  downloadUrl?: string,
+): TemplateVars {
   return {
     "file.handle": file.handle,
     "file.name": file.fileName,
     "file.mimeType": file.mimeType,
     "file.size": file.size,
     "file.sha256": file.sha256,
+    ...(downloadUrl ? { "file.url": downloadUrl } : {}),
   };
 }
 

@@ -1,6 +1,18 @@
+import { pipeline } from "node:stream/promises";
+
 import express from "express";
 
+import { FileRelayError } from "../lib/file-relay/errors";
 import { completeGoogleDriveAuthorization } from "../lib/file-relay/google-oauth";
+import {
+  claimPendingUpload,
+  tokenFingerprint,
+  verifyLinkToken,
+} from "../lib/file-relay/links";
+import {
+  stagingStore,
+  summarizeStagedFile,
+} from "../lib/file-relay/staging-store";
 import logger from "../utils/logger";
 
 /**
@@ -91,5 +103,79 @@ fileRelayRouter.get("/google/callback", async (req, res) => {
       );
   }
 });
+
+/**
+ * Signed staging links (see lib/file-relay/links.ts). Like the OAuth callback
+ * these carry no MetaMCP session: the HMAC in the token is the authorization,
+ * scoped to one file, one method and a few minutes.
+ */
+// The trailing file name is cosmetic (curl -O, browsers); only the token counts.
+fileRelayRouter.get(
+  ["/staged/:token", "/staged/:token/:name"],
+  async (req, res) => {
+    const token = String(req.params.token);
+    try {
+      const { id } = verifyLinkToken(token, "get");
+      const file = stagingStore.require(id);
+      res.status(200);
+      res.setHeader("Content-Type", file.mimeType);
+      res.setHeader("Content-Length", String(file.size));
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+      );
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      await pipeline(stagingStore.createReadStream(id), res);
+    } catch (error) {
+      sendLinkError(res, error, token);
+    }
+  },
+);
+
+fileRelayRouter.put("/upload/:token", async (req, res) => {
+  const token = String(req.params.token);
+  try {
+    const { id } = verifyLinkToken(token, "put");
+    const pending = claimPendingUpload(id);
+    const declared = req.headers["content-type"];
+    const mimeType =
+      declared &&
+      declared !== "application/octet-stream" &&
+      declared !== "application/x-www-form-urlencoded"
+        ? declared.split(";")[0]?.trim() || pending.mimeType
+        : pending.mimeType;
+    const file = await stagingStore.stageFromStream(req, {
+      fileName: pending.fileName,
+      mimeType,
+      source: pending.source,
+    });
+    res.status(201).json({ ok: true, staged: summarizeStagedFile(file) });
+  } catch (error) {
+    sendLinkError(res, error, token);
+  }
+});
+
+function sendLinkError(
+  res: express.Response,
+  error: unknown,
+  token: string,
+): void {
+  if (res.headersSent) {
+    res.destroy();
+    return;
+  }
+  if (error instanceof FileRelayError) {
+    res.status(error.message.includes("exceeds") ? 413 : 404).json({
+      error: error.message,
+    });
+    return;
+  }
+  logger.error(
+    `File relay link ${tokenFingerprint(token)} failed:`,
+    error instanceof Error ? error.message : error,
+  );
+  res.status(500).json({ error: "File relay link failed" });
+}
 
 export default fileRelayRouter;

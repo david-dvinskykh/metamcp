@@ -455,6 +455,24 @@ arguments, so secrets stay on the server too.
 Relayed calls go back through the normal middleware chain, so tool filtering, tool overrides
 and audit logging apply exactly as they would to a direct call.
 
+### ↕️ Sandbox ↔ MetaMCP over signed links (any file, any tool)
+
+A cloud agent session often needs the file *itself* (to look at a screenshot, parse a PDF) or holds a file that must
+go to a tool (a screenshot to Telegram). Both directions go through short-lived signed HTTPS links, so the bytes travel
+by `curl` and the conversation only sees a URL and a summary:
+
+| Direction | Steps |
+| --- | --- |
+| tool / Telegram → sandbox | `stage_file` with `downloadLink: true` (or `get_download_link` for a staged handle) → `curl -fsSo file '<downloadUrl>'` |
+| sandbox → tool / Telegram | `create_staging_upload` → `curl -fsS -T file '<uploadUrl>'` (answers with the handle) → `deliver_file` |
+
+For tools that fetch a URL themselves (Telegram `send_photo`/`send_file` take `file_path_or_url`), deliver with
+`contentEncoding: "url"`: the tool receives a signed link instead of base64, so even a 50 MB video costs a few tokens.
+`{{file.url}}` is available in destination arguments too. A link opens one file, for one method, for 15 minutes by
+default (never past the staged copy); an upload link accepts exactly one PUT. Links need the public origin
+(`FILE_RELAY_PUBLIC_URL`, falling back to `APP_URL`) and a secret (`FILE_RELAY_LINK_SECRET`, falling back to a key
+derived from `BETTER_AUTH_SECRET`); without them the two link tools are not listed.
+
 ### ⚙️ Configuration
 
 | Variable | Default | Purpose |
@@ -467,6 +485,8 @@ and audit logging apply exactly as they would to a direct call.
 | `FILE_RELAY_ALLOW_PRIVATE_HOSTS` | `false` | Allow `url` sources to resolve to private/loopback addresses. |
 | `FILE_RELAY_SECRET_ENV` | *(empty)* | Env var names that may be used as `{{env.NAME}}`. |
 | `FILE_RELAY_LOCAL_PATH_ROOTS` | *(empty = disabled)* | Directories a source result may point into with a local path. Needed for STDIO servers that save media to disk and answer with the path — e.g. `/tmp/downloads` for a Telethon-based Telegram server. |
+| `FILE_RELAY_PUBLIC_URL` | *(APP_URL)* | Public origin used in signed download/upload links. |
+| `FILE_RELAY_LINK_SECRET` | *(derived from BETTER_AUTH_SECRET)* | HMAC key for signed links. |
 | `FILE_RELAY_MAX_RESULT_TEXT_CHARS` | `2000` | Truncation budget for text echoed back from a destination tool. |
 | `TELEGRAM_BOT_TOKEN` | – | Enables `source.telegram`. |
 | `TELEGRAM_API_BASE` | `https://api.telegram.org` | Point at a self-hosted Bot API server. |
