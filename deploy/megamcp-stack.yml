@@ -165,10 +165,10 @@ services:
       - metamcp-network
 
   # Вотчер dev-loop'а «AI Bridge Dovira»: держит getUpdates своего, отдельного
-  # бота (DEVLOOP_BOT_TOKEN), пишет сообщения группы в инбокс и запускает
-  # Routine Claude Code, когда есть новое и ни одна сессия не держит аренду.
-  # Модель не тратит ничего, пока в группе тихо. Бот отдельный, поэтому с
-  # telegram-bot-go за getUpdates не конкурирует. Включается DEVLOOP_ENABLED=true.
+  # бота devloop, пишет сообщения группы в инбокс и будит рутину
+  # «Dovira Task Coordinator» id новых сообщений людей (дебаунс 20 с, не чаще
+  # раза в 120 с). Модель не тратит ничего, пока в группе тихо. Бот отдельный,
+  # поэтому с telegram-bot-go за getUpdates не конкурирует.
   devloop-watcher:
     container_name: megamcp-devloop-watcher
     image: ghcr.io/david-dvinskykh/metamcp-all-in-one:latest
@@ -177,18 +177,27 @@ services:
       com.centurylinklabs.watchtower.enable: "true"
       com.centurylinklabs.watchtower.scope: megamcp
     environment:
-      DEVLOOP_ENABLED: ${DEVLOOP_ENABLED:-false}
-      TELEGRAM_BOT_TOKEN: ${DEVLOOP_BOT_TOKEN:-}
-      DEVLOOP_CHAT_IDS: ${DEVLOOP_CHAT_IDS:--1003928414397}
-      # Routine «Dovira dev loop»: id (trig_...) и токен API-триггера
-      # (claude.ai/code/routines → Edit → Add another trigger → API).
-      DEVLOOP_ROUTINE_ID: ${DEVLOOP_ROUTINE_ID:-}
-      DEVLOOP_ROUTINE_TOKEN: ${DEVLOOP_ROUTINE_TOKEN:-}
-      DEVLOOP_DEBOUNCE: ${DEVLOOP_DEBOUNCE:-60s}
-      DEVLOOP_MAX_FIRES_PER_HOUR: ${DEVLOOP_MAX_FIRES_PER_HOUR:-20}
+      # Выключатель: DEVLOOP_ENABLED=false. По умолчанию включён и стартует,
+      # как только заданы токены; без них пишет в лог, чего не хватает, и
+      # простаивает. Подробности: deploy/devloop-watch.md.
+      DEVLOOP_ENABLED: ${DEVLOOP_ENABLED:-true}
+      # Бот devloop — тот же токен, что у сервера telegram-devloop-bot в
+      # MetaMCP. getUpdates этого бота читает только сторож.
+      WATCH_BOT_TOKEN: ${WATCH_BOT_TOKEN:-${DEVLOOP_BOT_TOKEN:-}}
+      WATCH_CHAT_ID: ${WATCH_CHAT_ID:--1003928414397}
+      # Рутина «Dovira Task Coordinator»: id и токен API-триггера
+      # (claude.ai/code/routines → рутина → Edit → API trigger).
+      ROUTINE_ID: ${ROUTINE_ID:-trig_01M9keX9E8Xn64kVb4uCqC58}
+      ROUTINE_TOKEN: ${ROUTINE_TOKEN:-${DEVLOOP_ROUTINE_TOKEN:-}}
+      WATCH_DEBOUNCE_SECONDS: ${WATCH_DEBOUNCE_SECONDS:-20}
+      WATCH_MIN_INTERVAL_SECONDS: ${WATCH_MIN_INTERVAL_SECONDS:-120}
+      # Алерт Давиду в личку через telegram-bot-go, не чаще раза в час.
+      WATCH_ALERT_BOT_TOKEN: ${WATCH_ALERT_BOT_TOKEN:-}
+      WATCH_ALERT_CHAT_ID: ${WATCH_ALERT_CHAT_ID:-375465077}
       OPS_DATA_DIR: /var/lib/ops-mcp
-      # Нажатия кнопок бота dev-loop'а дублируются сюда для MCP-сервера этого
-      # бота в MetaMCP (TELEGRAM_CALLBACK_QUEUE_FILE с тем же путём).
+      # Нажатия кнопок бота devloop уходят сюда для его MCP-сервера в MetaMCP
+      # (TELEGRAM_CALLBACK_QUEUE_FILE с тем же путём; том ops_mcp_data
+      # смонтирован и в app).
       TELEGRAM_CALLBACK_QUEUE_FILE: /var/lib/ops-mcp/devloop/callbacks.jsonl
     volumes:
       - ops_mcp_data:/var/lib/ops-mcp

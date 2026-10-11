@@ -62,11 +62,12 @@ func serve(ctx context.Context) error {
 }
 
 func watch(ctx context.Context) error {
-	// Off until the dev-loop bot and the routine are set up.
-	if os.Getenv("DEVLOOP_ENABLED") != "true" {
-		log.Print("devloop watcher: disabled (set DEVLOOP_ENABLED=true); idling")
-		<-ctx.Done()
-		return nil
+	// The watcher logs to stdout (one line per fire and per error); stdout is
+	// no MCP transport here.
+	log.SetOutput(os.Stdout)
+	// DEVLOOP_ENABLED=false is the kill switch; unset means on.
+	if os.Getenv("DEVLOOP_ENABLED") == "false" {
+		return idle(ctx, "disabled (DEVLOOP_ENABLED=false)")
 	}
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -74,7 +75,9 @@ func watch(ctx context.Context) error {
 	}
 	wc, err := LoadWatchConfig()
 	if err != nil {
-		return err
+		// Idle rather than exit: the container restarts on exit, and a
+		// missing token is not fixed by restarting.
+		return idle(ctx, "not started: "+err.Error())
 	}
 	store, err := NewStore(devloopDir(cfg))
 	if err != nil {
@@ -83,10 +86,17 @@ func watch(ctx context.Context) error {
 	return NewWatcher(wc, store).Run(ctx)
 }
 
+func idle(ctx context.Context, why string) error {
+	log.Printf("devloop watcher: %s; idling", why)
+	<-ctx.Done()
+	return nil
+}
+
 // devloopDir is shared by the watcher and every MCP process, so both must
-// see the same volume (DEVLOOP_DATA_DIR, default <OPS_DATA_DIR>/devloop).
+// see the same volume (WATCH_STATE_DIR or DEVLOOP_DATA_DIR, default
+// <OPS_DATA_DIR>/devloop).
 func devloopDir(cfg *Config) string {
-	if d := os.Getenv("DEVLOOP_DATA_DIR"); d != "" {
+	if d := firstEnv("WATCH_STATE_DIR", "DEVLOOP_DATA_DIR"); d != "" {
 		return d
 	}
 	return cfg.DataDir + "/devloop"

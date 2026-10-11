@@ -13,11 +13,13 @@ conversation.
 | `devloop_inbox` | Telegram messages / button presses the watcher recorded from the dev-loop chats, with attachment `file_id`s |
 | `devloop_lease` | One dev-loop session at a time: acquire / renew / release with the last handled inbox seq |
 
-`ops-mcp watch` long-polls the bot's `getUpdates`, writes group messages to the inbox, forwards button presses to
-telegram-bot-go through `TELEGRAM_CALLBACK_QUEUE_FILE`, and fires the Claude Code routine
-(`POST /v1/claude_code/routines/<id>/fire`) when there is something new: after 60 s of quiet (or 3 min of a running
-thread), only while no session holds the lease, at most `DEVLOOP_MAX_FIRES_PER_HOUR` times an hour, and again 30 min
-later if a fired session never took the lease. It spends no model tokens while the chat is quiet.
+`ops-mcp watch` long-polls the dev-loop bot's `getUpdates`, writes group messages to the inbox, forwards button presses
+to the bot's MCP server through `TELEGRAM_CALLBACK_QUEUE_FILE` (already answered), and wakes the «Dovira Task
+Coordinator» routine (`POST /v1/claude_code/routines/<id>/fire`) with the ids of new human messages:
+`DEVLOOP-WAKE chat=-1003928414397 ids=672,673,675 (last=675)`. It waits `WATCH_DEBOUNCE_SECONDS` (20) after the first
+new message and keeps `WATCH_MIN_INTERVAL_SECONDS` (120) between runs; messages arriving meanwhile go in the next run.
+It never writes to the group and spends no model tokens while the chat is quiet. Setup, behaviour and manual steps:
+[`deploy/devloop-watch.md`](../../deploy/devloop-watch.md).
 
 ## Configuration (MetaMCP → MCP Servers → ops-mcp → Environment)
 
@@ -41,13 +43,10 @@ OPS_DATA_DIR=/var/lib/ops-mcp
 - Generate a dedicated key per host (`ssh-keygen -t ed25519 -C ops-mcp`), add the public half to that host's
   `authorized_keys`; revoke by removing it there.
 
-Watcher (`devloop-watcher` service in `deploy/megamcp-stack.yml`): `DEVLOOP_ENABLED=true`, `TELEGRAM_BOT_TOKEN`,
-`DEVLOOP_CHAT_IDS`, `DEVLOOP_ROUTINE_ID` (`trig_…`), `DEVLOOP_ROUTINE_TOKEN` (`sk-ant-oat01-…`, generated in
-claude.ai/code/routines → the routine → Edit → Add another trigger → API), `TELEGRAM_CALLBACK_QUEUE_FILE`.
-The watcher uses its own, dedicated bot (`DEVLOOP_BOT_TOKEN` in stack.env), so it never competes with telegram-bot-go
-for `getUpdates`. Sessions write as that bot through a second better-telegram-mcp-go server in MetaMCP (bot mode, the
-same token, `TELEGRAM_CALLBACK_QUEUE_FILE=/var/lib/ops-mcp/devloop/callbacks.jsonl`, with the `ops_mcp_data` volume).
-The bot must be in the group with privacy mode off (BotFather `/setprivacy` → Disable) to see ordinary messages.
+Watcher (`devloop-watcher` service in `deploy/megamcp-stack.yml`): `WATCH_BOT_TOKEN`, `WATCH_CHAT_ID`, `ROUTINE_ID`,
+`ROUTINE_TOKEN`, optionally `WATCH_ALERT_BOT_TOKEN` / `WATCH_ALERT_CHAT_ID`, `TELEGRAM_CALLBACK_QUEUE_FILE`,
+`WATCH_DEBOUNCE_SECONDS`, `WATCH_MIN_INTERVAL_SECONDS` (the older `TELEGRAM_BOT_TOKEN`, `DEVLOOP_CHAT_IDS`,
+`DEVLOOP_ROUTINE_*` names still work). See [`deploy/devloop-watch.md`](../../deploy/devloop-watch.md).
 
 ## Development
 
