@@ -55,7 +55,7 @@ ARG PNPM_VERSION=10.29.3
 # chigwell/telegram-mcp @ main на 2026-07-27 12:47 (PR #168, exposed-tools-allowlist).
 # У ветки нет тегов и она активно движется — без пина пересборка молча меняет
 # версию сервера.
-ARG TELEGRAM_MCP_COMMIT=e224762671897c1df53deadb51be84eaaaf2cea3
+ARG TELEGRAM_MCP_COMMIT=c1e3dc4adff27a6935852309bf0218f1ac4cd766
 
 # david-dvinskykh/better-telegram-mcp — форк, а не PyPI-релиз n24q02m: именно
 # его звал конфиг сервера в MetaMCP (`uvx --from git+...@main`), и в нём есть
@@ -142,7 +142,7 @@ ARG PORTAINER_MCP_VERSION=0.7.0
 # (`lightpanda mcp`, stdio по умолчанию). 0.3.7 @ 2026-08-16 — последний
 # нумерованный релиз; тег nightly брать нельзя, он переписывается и образ
 # перестаёт быть воспроизводимым.
-ARG LIGHTPANDA_VERSION=1.0.0
+ARG LIGHTPANDA_VERSION=1.0.1
 
 # ===========================================================================
 # base — как в апстриме: uv + Node 20 + pnpm
@@ -325,8 +325,8 @@ ARG LIGHTPANDA_VERSION
 ARG TARGETARCH=""
 
 # SHA256 бинарников релиза 0.3.7, проверены вручную 2026-08-26.
-ARG SHA256_AMD64=aa5a4b8ed53d1e38b3c73f5b2647d0a84a82e6744557f45f9a9c85858aa031c3
-ARG SHA256_ARM64=69791924bcee43b13b224af4c845622c5fe66fdbc1b8143bfaa39ca8f85244f5
+ARG SHA256_AMD64=551747e35c51ba107b5d5277eca4b48e077b2a3b40f09a047bf6670448bc35fd
+ARG SHA256_ARM64=392ba370c12d9f045c36c1477db8b3e2985942c89532732ef8d1610057db7d5c
 
 # Запуск скачанного бинарника проверяем только при нативной сборке: при
 # кросс-сборке в файле чужой ELF и exec падает на «Exec format error».
