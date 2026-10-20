@@ -55,7 +55,7 @@ ARG PNPM_VERSION=10.29.3
 # chigwell/telegram-mcp @ main на 2026-07-27 12:47 (PR #168, exposed-tools-allowlist).
 # У ветки нет тегов и она активно движется — без пина пересборка молча меняет
 # версию сервера.
-ARG TELEGRAM_MCP_COMMIT=d5350aacf4632537f0a97ad8235a656ef4d49aff
+ARG TELEGRAM_MCP_COMMIT=6f169eacdd5582a291061ae15b4829029666f53c
 
 # david-dvinskykh/better-telegram-mcp — форк, а не PyPI-релиз n24q02m: именно
 # его звал конфиг сервера в MetaMCP (`uvx --from git+...@main`), и в нём есть
@@ -75,7 +75,7 @@ ARG BETTER_TELEGRAM_MCP_COMMIT=39f9eed045aae126a47c7a8f700d09341726abbe
 # конфиг сервера в MetaMCP звал готовую консольную команду вместо `uvx`.
 # Собственная зависимость пакета — mcp<2,>=1.29.0, отдельный `--with "mcp<2"`
 # ей не нужен.
-ARG MCP_SERVER_FETCH_VERSION=2026.10.10
+ARG MCP_SERVER_FETCH_VERSION=2026.10.19
 
 # curl-mcp — обёртка над самим бинарником curl: mcp-server-fetch умеет только
 # GET со сведением страницы в markdown, а этот сервер даёт POST, PUT, PATCH,
