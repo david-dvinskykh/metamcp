@@ -116,15 +116,11 @@ ARG NOTION_SEARCH_MODEL_REVISION=614241f622f53c4eeff9890bdc4f31cfecc418b3
 
 ARG INSTAGRAM_DM_VERSION=2.1.1
 ARG ZENMONEY_NPM_VERSION=0.4.0
-# 0.6.0 @ 2026-08-22 «Merge reminder tools with the edit/debt line» — к
-# list_reminders и delete_reminder добавляются update_transaction и add_debt.
-# Ветки форка разошлись: напоминания жили только в
-# claude/zenmoney-ddvin-mcp-update-x4ttod, правки и долги — только в main;
-# 0.6.0 сводит их вместе. Коммит лежит в ветке
-# claude/zenmoney-mcp-version-update-6t44bk, не в main; GitHub отдаёт его по
-# SHA, потому что он достижим из ветки.
+# 0.8.0 @ 2026-10-26 «Merge budget tools, release 0.8.0» — к напоминаниям,
+# правкам и долгам добавляются list_budgets и set_budget. Коммит в main форка;
+# пин дальше двигает scripts/bump_pins.py по refs/heads/main.
 # В npm пакет так и не выложен (registry отдаёт 404), поэтому собираем из git.
-ARG ZENMONEY_DDVIN_COMMIT=182480f19544903142c3c5e6cc22313caafa0859
+ARG ZENMONEY_DDVIN_COMMIT=2ae894291ffdce9ade675db5e57e519f066f08eb
 
 # david-dvinskykh/one-zenwallet @ main на 2026-07-31 («Support running the MCP
 # server via npx»). Репозиторий активно движется, тегов нет — пин по коммиту.
