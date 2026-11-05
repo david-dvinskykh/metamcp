@@ -75,7 +75,7 @@ ARG BETTER_TELEGRAM_MCP_COMMIT=39f9eed045aae126a47c7a8f700d09341726abbe
 # конфиг сервера в MetaMCP звал готовую консольную команду вместо `uvx`.
 # Собственная зависимость пакета — mcp<2,>=1.29.0, отдельный `--with "mcp<2"`
 # ей не нужен.
-ARG MCP_SERVER_FETCH_VERSION=2026.10.28
+ARG MCP_SERVER_FETCH_VERSION=2026.11.4
 
 # curl-mcp — обёртка над самим бинарником curl: mcp-server-fetch умеет только
 # GET со сведением страницы в markdown, а этот сервер даёт POST, PUT, PATCH,
