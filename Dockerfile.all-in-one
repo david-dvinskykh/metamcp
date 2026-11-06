@@ -9,6 +9,8 @@
 #   better-telegram-mcp-go — тот же форк, Go-сборка (stdio), отдельной командой
 #   ops-mcp            — servers/ops-mcp этой репы, Go: SSH к серверам клиники,
 #                        Binotel, инбокс и аренда dev-loop'а + `ops-mcp watch`
+#   bring-mcp          — servers/bring-mcp этой репы, Go: списки покупок Bring!
+#                        (замена npx bring-mcp@latest, те же 16 инструментов)
 #   mcp-instagram-dm   — npm-пакет, версия зафиксирована
 #   zenmoney-mcp       — npm-пакет zenmoney-mcp, версия зафиксирована
 #   zenmoney-mcp-ddvin — форк david-dvinskykh, сборка по package-lock.json
@@ -435,6 +437,31 @@ RUN set -eux; \
       -o /out/ops-mcp .; \
     test -x /out/ops-mcp
 
+# ===========================================================================
+# bring-mcp-builder — свой Go-сервер Bring! (servers/bring-mcp), замена
+# TypeScript-пакета bring-mcp, который MetaMCP тянул через `npx ...@latest` при
+# каждом старте процесса. Тот же коммит METAMCP_REPO, что и у ops-mcp.
+# ===========================================================================
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1-trixie AS bring-mcp-builder
+
+ARG METAMCP_REPO
+ARG METAMCP_COMMIT
+ARG TARGETARCH=""
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "${METAMCP_REPO}"; \
+    git fetch -q --depth 1 origin "${METAMCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    cd servers/bring-mcp; \
+    go test ./...; \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags "-s -w -X main.version=${METAMCP_COMMIT}" \
+      -o /out/bring-mcp .; \
+    test -x /out/bring-mcp
+
 FROM node:20-bookworm-slim AS zenmoney-ddvin-builder
 
 ARG ZENMONEY_DDVIN_COMMIT
@@ -783,6 +810,15 @@ RUN set -eux; \
     chmod 0755 /usr/local/bin/ops-mcp; \
     ops-mcp version
 
+# --- bring-mcp ------------------------------------------------------------
+# Bring! списки покупок, stdio. BRING_EMAIL / BRING_PASSWORD — в env сервера
+# в MetaMCP; сессия кэшируется в /var/lib/bring-mcp (без VOLUME: кэш одноразовый,
+# потеря при пересоздании контейнера стоит один логин).
+COPY --from=bring-mcp-builder /out/bring-mcp /usr/local/bin/bring-mcp
+RUN set -eux; \
+    chmod 0755 /usr/local/bin/bring-mcp; \
+    bring-mcp version
+
 # --- mcp-server-fetch -----------------------------------------------------
 # Тот же приём, что и с better-telegram-mcp: `uv tool install` кладёт в
 # /usr/local/bin шим с шебангом на питон своего venv, поэтому сервер стартует
@@ -898,8 +934,8 @@ COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpa
 # конфигурации сервера, если телеметрию захочется вернуть.
 #
 RUN set -eux; \
-    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp/downloads /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp /var/lib/ops-mcp/devloop; \
-    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp /var/lib/ops-mcp; \
+    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp/downloads /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp /var/lib/ops-mcp/devloop /var/lib/bring-mcp; \
+    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp /var/lib/ops-mcp /var/lib/bring-mcp; \
     \
     printf '%s\n' \
       '#!/bin/sh' \
