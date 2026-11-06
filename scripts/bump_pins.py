@@ -122,6 +122,7 @@ PINS = [
     ),
     Pin("INSTAGRAM_DM_VERSION", lambda: npm_latest("mcp-instagram-dm")),
     Pin("ZENMONEY_NPM_VERSION", lambda: npm_latest("zenmoney-mcp")),
+    Pin("BRING_MCP_VERSION", lambda: npm_latest("bring-mcp")),
     # The fork is built from git, not from npm: its releases stall on the npm
     # token, while main is where the tools actually land. It followed no ref at
     # all until 19.09.2026, because main then lagged behind a working branch;

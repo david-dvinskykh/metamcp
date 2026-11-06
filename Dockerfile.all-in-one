@@ -11,6 +11,7 @@
 #                        Binotel, инбокс и аренда dev-loop'а + `ops-mcp watch`
 #   mcp-instagram-dm   — npm-пакет, версия зафиксирована
 #   zenmoney-mcp       — npm-пакет zenmoney-mcp, версия зафиксирована
+#   bring-mcp          — npm-пакет bring-mcp (Bring!), версия зафиксирована
 #   zenmoney-mcp-ddvin — форк david-dvinskykh, сборка по package-lock.json
 #   one-zenwallet-mcp  — david-dvinskykh/one-zenwallet, каталог mcp-server
 #   gocardless-mcp     — david-dvinskykh/GoCardless-Bank-Accaunt-Data-MCP,
@@ -116,6 +117,12 @@ ARG NOTION_SEARCH_MODEL_REVISION=614241f622f53c4eeff9890bdc4f31cfecc418b3
 
 ARG INSTAGRAM_DM_VERSION=2.1.1
 ARG ZENMONEY_NPM_VERSION=0.4.0
+# bring-mcp (списки покупок Bring!). Раньше запускался в MetaMCP как
+# `npx -y bring-mcp@latest`: каждый старт процесса ходил в npm, и на Raspberry Pi
+# инициализация не укладывалась в таймаут подключения — новые сессии MetaMCP
+# ждали его по три попытки. Пакет требует Node >=22, в образе Node 20: npm даёт
+# только предупреждение EBADENGINE, сервер на 20 работает.
+ARG BRING_MCP_VERSION=1.1.10
 # 0.8.1 @ 2026-10-26 «Budgets: keep the lock as it is» — к напоминаниям,
 # правкам и долгам добавляются list_budgets и set_budget. Коммит в main форка;
 # пин дальше двигает scripts/bump_pins.py по refs/heads/main.
@@ -688,6 +695,7 @@ ARG BETTER_TELEGRAM_MCP_COMMIT
 ARG MCP_SERVER_FETCH_VERSION
 ARG INSTAGRAM_DM_VERSION
 ARG ZENMONEY_NPM_VERSION
+ARG BRING_MCP_VERSION
 
 USER root
 WORKDIR /app
@@ -800,10 +808,12 @@ RUN set -eux; \
 RUN set -eux; \
     npm install -g \
       "mcp-instagram-dm@${INSTAGRAM_DM_VERSION}" \
-      "zenmoney-mcp@${ZENMONEY_NPM_VERSION}"; \
+      "zenmoney-mcp@${ZENMONEY_NPM_VERSION}" \
+      "bring-mcp@${BRING_MCP_VERSION}"; \
     npm cache clean --force; \
     command -v mcp-instagram-dm; \
-    command -v zenmoney-mcp
+    command -v zenmoney-mcp; \
+    command -v bring-mcp
 
 # --- portainer-mcp --------------------------------------------------------
 COPY --from=portainer-fetcher /tmp/portainer-mcp /usr/local/lib/portainer-mcp/portainer-mcp
