@@ -7,7 +7,6 @@ import { Suspense, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { useTranslations } from "@/hooks/useTranslations";
-import { authClient } from "@/lib/auth-client";
 import { vanillaTrpcClient } from "@/lib/trpc";
 
 /**
@@ -21,7 +20,13 @@ import { vanillaTrpcClient } from "@/lib/trpc";
  * The page also shows which account the namespaces belong to and lets the user
  * switch to another one: signing out returns to the login page, which brings
  * the user back here with the same authorization request.
+ *
+ * The auth client is imported lazily: building it reads APP_URL, which is not
+ * set while Next.js prerenders this page at build time.
  */
+const loadAuthClient = async () =>
+  (await import("@/lib/auth-client")).authClient;
+
 function NamespaceSelection() {
   const { t } = useTranslations();
   const searchParams = useSearchParams();
@@ -57,8 +62,8 @@ function NamespaceSelection() {
       }
     };
 
-    authClient
-      .getSession()
+    loadAuthClient()
+      .then((authClient) => authClient.getSession())
       .then((session) => setAccount(session?.data?.user ?? null))
       .catch(() => setAccount(null));
     loadNamespaces();
@@ -68,6 +73,7 @@ function NamespaceSelection() {
   const switchAccount = async () => {
     setSwitching(true);
     try {
+      const authClient = await loadAuthClient();
       await authClient.signOut();
     } finally {
       window.location.href = loginUrl();
