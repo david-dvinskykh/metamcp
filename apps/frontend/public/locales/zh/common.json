@@ -73,7 +73,9 @@
       "description": "此连接将使用你选择的命名空间。要使用其他命名空间，请再连接一次。",
       "connect": "连接",
       "empty": "你还没有命名空间。请先创建一个，然后重新发起连接。",
-      "missingRequest": "此页面在没有授权请求的情况下被打开。请从你的 MCP 客户端发起连接。"
+      "missingRequest": "此页面在没有授权请求的情况下被打开。请从你的 MCP 客户端发起连接。",
+      "signedInAs": "当前登录账号",
+      "switchAccount": "使用其他账号"
     }
   },
   "pagination": {
