@@ -261,8 +261,8 @@ class RateLimiter {
 }
 
 // Create rate limiter instances
-const authEndpointLimiter = new RateLimiter(20, 1 * 60 * 1000); // 20 attempts per 1 minute
-const tokenEndpointLimiter = new RateLimiter(20, 1 * 60 * 1000); // 10 attempts per 1 minute
+const authEndpointLimiter = new RateLimiter(120, 1 * 60 * 1000); // 120 authorization requests per client IP per minute
+const tokenEndpointLimiter = new RateLimiter(120, 1 * 60 * 1000); // 120 token requests per client IP per minute
 
 // Clean up rate limiter entries every 10 minutes
 setInterval(

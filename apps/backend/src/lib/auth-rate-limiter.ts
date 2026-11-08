@@ -77,7 +77,7 @@ export class AuthRateLimiter {
 }
 
 // Create rate limiter instance for failed authentication attempts
-export const authRateLimiter = new AuthRateLimiter(20, 1 * 60 * 1000); // 20 attempts per 1 minute
+export const authRateLimiter = new AuthRateLimiter(120, 1 * 60 * 1000); // 120 failed attempts per client IP and endpoint per minute
 
 // Clean up rate limiter entries every 10 minutes
 setInterval(

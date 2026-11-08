@@ -9,7 +9,27 @@ import publicEndpointsRouter from "./routers/public-metamcp";
 import trpcRouter from "./routers/trpc";
 import logger from "./utils/logger";
 
+function parseTrustProxy(v: string | undefined): boolean | number | string {
+  if (v === undefined || v.trim() === "") {
+    return "loopback, linklocal, uniquelocal, 100.64.0.0/10";
+  }
+  const t = v.trim();
+  if (t === "true") return true;
+  if (t === "false") return false;
+  if (/^\d+$/.test(t)) return Number(t);
+  return t;
+}
+
 const app = express();
+
+// MetaMCP runs behind a reverse proxy (Nginx Proxy Manager over Tailscale, a
+// Docker bridge, …). Without trust proxy every request has the proxy's
+// address as req.ip, so the per-IP limiters (OAuth token / authorize, failed
+// authentication) count all clients together: one burst of token refreshes
+// after a reconnect answered 429 to everyone and the clients dropped their
+// sign-in. Trust private, link-local, loopback and CGNAT (Tailscale) hops;
+// TRUST_PROXY overrides it (Express syntax: "false", a hop count, or a list).
+app.set("trust proxy", parseTrustProxy(process.env.TRUST_PROXY));
 
 // Global JSON middleware for non-proxy routes
 app.use((req, res, next) => {
