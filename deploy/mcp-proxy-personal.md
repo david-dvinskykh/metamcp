@@ -53,6 +53,24 @@ Imported server specs keep their stdio commands unchanged (`command: telegram-mc
 Telegram session data (`/opt/telegram/data` in the MetaMCP stack) is not part of the image;
 mount it where the server configuration expects it.
 
+### Migrated volumes: change their owner first
+
+MetaMCP runs as `nextjs` (uid 1001, gid 1001); the proxy runs as `node` (uid 1000, gid 1000).
+Every volume taken over from the MetaMCP stack (the data directories above, Telegram sessions)
+is owned by uid 1001, so the proxy cannot write to it: the servers fail with permission errors.
+Before the proxy's first start, with MetaMCP stopped or the volume not in use by it, change the
+owner of each migrated volume once:
+
+```sh
+for v in portainer_mcp_data zenmoney_ddvin_data one_zenwallet_data gocardless_data \
+         receipts_data notion_proxy_search_data ops_mcp_data telegram_data; do
+  docker run --rm -v "$v":/data alpine chown -R 1000:1000 /data
+done
+```
+
+Use the volume names of your stack (`docker volume ls`). MetaMCP cannot write to a volume after
+this; keep a copy (or keep MetaMCP on its own volumes) if it must keep running against the same data.
+
 ## Build locally
 
 ```sh
