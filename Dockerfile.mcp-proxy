@@ -1,0 +1,891 @@
+# syntax=docker/dockerfile:1
+#
+# mcp-proxy-personal — Bridgetto MCP proxy + все stdio-MCP-серверы, которые
+# сегодня несёт образ MetaMCP Дэвида (Dockerfile.all-in-one).
+#
+# Зачем: установку Дэвида можно перевести с MetaMCP на Bridgetto, не меняя
+# stdio-команды серверов. Команды (`telegram-mcp`, `ops-mcp`, `portainer-mcp`,
+# ...) и пути (/usr/local/lib/*, /opt/*, /var/lib/*) здесь те же, что в
+# all-in-one, поэтому импортированная спецификация серверов остаётся валидной.
+# Образ указывается как `image` компонента mcp_proxy (см. deploy/mcp-proxy-personal.md).
+#
+#   metamcp / MetaMCP — НЕТ: прокси Bridgetto заменяет его целиком.
+#   Postgres-клиент   — НЕТ: прокси хранит состояние в /var/lib/mcp-proxy.
+#
+# Состав и пины — копия Dockerfile.all-in-one (те же коммиты, версии и
+# контрольные суммы). Ночной автобамп scripts/bump_pins.py правит ТОЛЬКО
+# Dockerfile.all-in-one; пока MetaMCP не выведен из эксплуатации, новые пины
+# переносятся сюда вместе с ним (одни и те же ARG, строка в строку).
+#
+# Отличия от all-in-one, все вынужденные:
+#   • база — образ прокси (Debian bookworm, node:22, пользователь `node`
+#     uid 1000), а не uv:debian + Node 20 + пользователь nextjs (uid 1001).
+#     Каталоги данных принадлежат `node`.
+#   • в bookworm нет Python 3.13, который требует better-telegram-mcp
+#     (Requires-Python ==3.13.*). Интерпретатор ставит uv (python-build-
+#     standalone) в общий /opt/uv-python — не в /root, иначе процесс от `node`
+#     его не увидит. Тот же 3.13 берёт и telegram-mcp.
+#   • ops-mcp и bring-mcp собираются из servers/ этого же контекста сборки, а
+#     не клонируются по METAMCP_COMMIT: образ собирается из того коммита,
+#     который лежит в репозитории, и пересборка идёт по изменению servers/**.
+#
+#   docker build -f Dockerfile.mcp-proxy -t mcp-proxy-personal .
+#   # на локально собранном прокси:
+#   docker build -f Dockerfile.mcp-proxy --build-arg PROXY_IMAGE=mcp-proxy:test -t mcp-proxy-personal .
+#
+# Сборка в CI: .github/workflows/mcp-proxy-personal.yml
+# (ghcr.io/david-dvinskykh/mcp-proxy-personal).
+#
+# Все внешние источники зафиксированы по коммиту или точной версии.
+# Ни один сервер не тянется из сети при старте контейнера.
+
+# Образ прокси Bridgetto, на который кладутся серверы.
+ARG PROXY_IMAGE=ghcr.io/david-dvinskykh/mcp-proxy:latest
+
+# chigwell/telegram-mcp @ main на 2026-07-27 12:47 (PR #168, exposed-tools-allowlist).
+# У ветки нет тегов и она активно движется — без пина пересборка молча меняет
+# версию сервера.
+ARG TELEGRAM_MCP_COMMIT=9a886d78e82314b542097023f7357a90b744d8bf
+
+# david-dvinskykh/better-telegram-mcp — форк, а не PyPI-релиз n24q02m: именно
+# его звал конфиг сервера в MetaMCP (`uvx --from git+...@main`), и в нём есть
+# правки, которых в PyPI нет. Пакет требует ровно Python 3.13
+# (Requires-Python ==3.13.*) — системный python3 в trixie как раз 3.13.
+#
+# Коммит запинен, как и у всех остальных компонентов этого файла: `@main`
+# менял сервер молча при каждом пересоздании контейнера. Обновление — правкой
+# этого ARG (её делает ночной автобамп scripts/bump_pins.py).
+#
+# Этот же коммит собирает и Go-версию (стадия better-telegram-go-builder): один
+# форк, одна ветка, один пин — обе сборки всегда из одного исходника.
+ARG BETTER_TELEGRAM_MCP_REPO=https://github.com/david-dvinskykh/better-telegram-mcp
+ARG BETTER_TELEGRAM_MCP_COMMIT=39f9eed045aae126a47c7a8f700d09341726abbe
+
+# modelcontextprotocol/servers, пакет mcp-server-fetch. Ставится в образ, чтобы
+# конфиг сервера в MetaMCP звал готовую консольную команду вместо `uvx`.
+# Собственная зависимость пакета — mcp<2,>=1.29.0, отдельный `--with "mcp<2"`
+# ей не нужен.
+ARG MCP_SERVER_FETCH_VERSION=2026.11.4
+
+# curl-mcp — обёртка над самим бинарником curl: mcp-server-fetch умеет только
+# GET со сведением страницы в markdown, а этот сервер даёт POST, PUT, PATCH,
+# DELETE и произвольные заголовки, тело, авторизацию, прокси и unix-сокет.
+# Собирается из исходников: релизов и пакета в npm/PyPI у него нет.
+#
+# Коммит запинен так же, как у остальных компонентов; двигает его ночной
+# автобамп (scripts/bump_pins.py) по main репозитория, а не рука.
+ARG CURL_MCP_REPO=https://github.com/david-dvinskykh/curl-mcp
+ARG CURL_MCP_COMMIT=40b1d2676cc7a6b72ff1247fc27224a1607a4f68
+
+# david-dvinskykh/recipt-fetcher-mcp — MCP-сервер выгрузки чеков из Lidl, Action
+# и Allegro для категоризации трат. Go, stdio по умолчанию. Тегов и пакета нет,
+# ветка движется — пин по коммиту, как у curl-mcp; двигает его ночной автобамп
+# (scripts/bump_pins.py) по main репозитория, а не рука.
+ARG RECEIPTS_MCP_REPO=https://github.com/david-dvinskykh/recipt-fetcher-mcp
+ARG RECEIPTS_MCP_COMMIT=f5f028a6cbc7b1e7e33d51c3a647d7a56993f588
+
+# david-dvinskykh/notion-proxy-search-mcp — зеркало Notion в SQLite с локальным
+# гибридным поиском (int8-эмбеддинги + BM25 + обход связей). Go, только stdio,
+# без cgo. Пин двигает ночной автобамп (scripts/bump_pins.py) по main
+# репозитория, как у остальных компонентов.
+ARG NOTION_PROXY_SEARCH_MCP_REPO=https://github.com/david-dvinskykh/notion-proxy-search-mcp
+ARG NOTION_PROXY_SEARCH_MCP_COMMIT=d5d7789a67e044cfafef45f294b69c00d06cc42f
+
+# Контрольная точка эмбеддингов, из которой собирается весовой блоб. Ревизия
+# запинена сознательно: смена модели меняет все векторы в зеркале, поэтому она
+# не должна происходить от того, что на Hugging Face обновили ветку. Сервер
+# пишет имя модели рядом с каждым вектором и пересчитывает их сам, если имя
+# изменилось, — но считать будет час на плате.
+#
+# Именно на этой ревизии сделаны замеры в docs/DESIGN.ru.md: блоб 118,7 МБ,
+# худший косинус против float32-экспорта того же чекпойнта 0,99811, токенизатор
+# совпадает с эталонным на 448 из 448 случаев. Двигать ревизию — значит
+# перепроверять эти три числа.
+ARG NOTION_SEARCH_MODEL_REPO=intfloat/multilingual-e5-small
+ARG NOTION_SEARCH_MODEL_REVISION=614241f622f53c4eeff9890bdc4f31cfecc418b3
+
+ARG INSTAGRAM_DM_VERSION=2.1.1
+ARG ZENMONEY_NPM_VERSION=0.4.0
+# 0.8.1 @ 2026-10-26 «Budgets: keep the lock as it is» — к напоминаниям,
+# правкам и долгам добавляются list_budgets и set_budget. Коммит в main форка;
+# пин дальше двигает scripts/bump_pins.py по refs/heads/main.
+# В npm пакет так и не выложен (registry отдаёт 404), поэтому собираем из git.
+ARG ZENMONEY_DDVIN_COMMIT=6fab61d07990afc2a605feace1663dde1a287966
+
+# david-dvinskykh/one-zenwallet @ main на 2026-07-31 («Support running the MCP
+# server via npx»). Репозиторий активно движется, тегов нет — пин по коммиту.
+ARG ONE_ZENWALLET_COMMIT=f5de9f057476ebb024c6f35859dc7de00a95b23e
+
+# david-dvinskykh/GoCardless-Bank-Accaunt-Data-MCP @ 0.1.0 — MCP-сервер к
+# GoCardless Bank Account Data API (v2, бывший Nordigen): подключение банка и
+# чтение балансов, реквизитов и истории операций. Тегов и пакета в npm нет,
+# ветка движется — пин по коммиту.
+ARG GOCARDLESS_MCP_COMMIT=985363bdfb13378bd189751313851a42b134f89c
+
+ARG PORTAINER_MCP_VERSION=0.7.0
+
+# lightpanda-io/browser — безголовый браузер на Zig со встроенным MCP-сервером
+# (`lightpanda mcp`, stdio по умолчанию). 0.3.7 @ 2026-08-16 — последний
+# нумерованный релиз; тег nightly брать нельзя, он переписывается и образ
+# перестаёт быть воспроизводимым.
+ARG LIGHTPANDA_VERSION=1.0.3
+
+# Версия, зашиваемая в ops-mcp и bring-mcp (-X main.version). В CI — SHA коммита.
+ARG MCP_PROXY_PERSONAL_VERSION=dev
+
+FROM debian:trixie-slim AS portainer-fetcher
+
+ARG PORTAINER_MCP_VERSION
+# TARGETARCH проставляет только BuildKit. Классический сборщик (его использует
+# Portainer в «Build a new image») оставляет переменную пустой, поэтому ниже
+# есть запасной путь через uname -m. Значение можно и передать явно:
+#   --build-arg TARGETARCH=arm64
+ARG TARGETARCH=""
+
+# SHA256 архивов релиза v0.6.1, проверены вручную 2026-07-27.
+ARG SHA256_AMD64=06befc318f7cfa366dded143d4822e37b3307ef949f97c7fe0e9920a5a8f6201
+ARG SHA256_ARM64=e259086cf54516805a9af8e32694e781d62cfbab5139ddb0bb244c6d8dfcc5df
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    rm -rf /var/lib/apt/lists/*; \
+    arch="${TARGETARCH}"; \
+    if [ -z "${arch}" ]; then \
+      case "$(uname -m)" in \
+        x86_64)  arch=amd64 ;; \
+        aarch64) arch=arm64 ;; \
+        *) echo "не удалось определить архитектуру: $(uname -m)" >&2; exit 1 ;; \
+      esac; \
+      echo "TARGETARCH пуст (сборка без BuildKit), определил по uname: ${arch}"; \
+    fi; \
+    case "${arch}" in \
+      amd64) sha="${SHA256_AMD64}" ;; \
+      arm64) sha="${SHA256_ARM64}" ;; \
+      *) echo "unsupported arch: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/strnad/portainer-mcp/releases/download/v${PORTAINER_MCP_VERSION}/portainer-mcp-v${PORTAINER_MCP_VERSION}-linux-${arch}.tar.gz"; \
+    curl -fsSL --retry 3 --retry-delay 2 -o /tmp/pm.tgz "${url}"; \
+    echo "${sha}  /tmp/pm.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/pm.tgz -C /tmp; \
+    chmod 0755 /tmp/portainer-mcp; \
+    /tmp/portainer-mcp -h 2>&1 | grep -q -- '-disable-version-check'
+
+# ===========================================================================
+# lightpanda-fetcher — бинарник браузера с проверкой контрольной суммы
+# ===========================================================================
+#
+# Релиз отдаёт голый ELF без архива: lightpanda-<arch>-linux (~150 МБ).
+# Зависимостей у него всего две — libc и libm, обе есть в trixie
+# (бинарник требует GLIBC_2.34, в trixie 2.41).
+#
+FROM debian:trixie-slim AS lightpanda-fetcher
+
+ARG LIGHTPANDA_VERSION
+# TARGETARCH проставляет только BuildKit — см. комментарий в portainer-fetcher.
+ARG TARGETARCH=""
+
+# SHA256 бинарников релиза 0.3.7, проверены вручную 2026-08-26.
+ARG SHA256_AMD64=53eb34da09159dcf8f04865dbfe3e63e9a652062684495aa7ced5ddd7c82e8b0
+ARG SHA256_ARM64=20a5348bf3b6f71e41088223b188552ab550c1b9c9a9cbd8f099e6f7f3d78549
+
+# Запуск скачанного бинарника проверяем только при нативной сборке: при
+# кросс-сборке в файле чужой ELF и exec падает на «Exec format error».
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    rm -rf /var/lib/apt/lists/*; \
+    arch="${TARGETARCH}"; \
+    if [ -z "${arch}" ]; then \
+      case "$(uname -m)" in \
+        x86_64)  arch=amd64 ;; \
+        aarch64) arch=arm64 ;; \
+        *) echo "не удалось определить архитектуру: $(uname -m)" >&2; exit 1 ;; \
+      esac; \
+      echo "TARGETARCH пуст (сборка без BuildKit), определил по uname: ${arch}"; \
+    fi; \
+    case "${arch}" in \
+      amd64) sha="${SHA256_AMD64}"; asset=lightpanda-x86_64-linux ;; \
+      arm64) sha="${SHA256_ARM64}"; asset=lightpanda-aarch64-linux ;; \
+      *) echo "unsupported arch: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/lightpanda-io/browser/releases/download/${LIGHTPANDA_VERSION}/${asset}"; \
+    curl -fsSL --retry 3 --retry-delay 2 -o /tmp/lightpanda "${url}"; \
+    echo "${sha}  /tmp/lightpanda" | sha256sum -c -; \
+    chmod 0755 /tmp/lightpanda; \
+    host=""; \
+    case "$(uname -m)" in \
+      x86_64)  host=amd64 ;; \
+      aarch64) host=arm64 ;; \
+    esac; \
+    if [ "${host}" = "${arch}" ]; then \
+      test "$(/tmp/lightpanda version)" = "${LIGHTPANDA_VERSION}"; \
+      /tmp/lightpanda mcp --help 2>&1 | grep -q -- '--cdp-port'; \
+    fi
+
+# ===========================================================================
+# zenmoney-ddvin-builder — форк, сборка СТРОГО по package-lock.json
+# ===========================================================================
+#
+# `npx -y github:david-dvinskykh/zenmoney-mcp-Ddvin` не собирается: npm при
+# установке из git игнорирует package-lock.json, тянет свежий zod 4.x с другим
+# выводом типов, и хук prepare (tsc) падает на TS7031. `npm ci` по лок-файлу
+# (zod 4.3.6, typescript 5.9.3) проходит чисто.
+#
+# ===========================================================================
+# better-telegram-go-builder — Go-сборка того же форка better-telegram-mcp
+# ===========================================================================
+#
+# Форк с 2026-09-09 несёт вторую реализацию тех же семи инструментов — на Go,
+# только stdio (cmd/ + internal/, описание в GO.md). Питоновский сервер выше
+# остаётся на месте и не трогается: это второй бинарник рядом, под другим
+# именем, чтобы его можно было включить отдельным сервером в MetaMCP и сравнить.
+#
+# Ради чего: питоновские MCP-серверы в этом образе занимают 100–200 МБ RSS
+# каждый, Go-шный portainer-mcp — 13 МБ. Здесь ~18 МБ статики без интерпретатора.
+#
+# Коммит берётся из того же ARG, что и питоновская установка: один форк, одна
+# ветка main, один пин — значит ночной автобамп двигает обе сборки разом.
+#
+# Сборка идёт на платформе сборщика с кросс-компиляцией под TARGETARCH — как у
+# curl-mcp и receipts-mcp ниже. Под arm64 нативная сборка шла бы через QEMU, а
+# эмулированный Go-тулчейн стоит десятки минут на ровном месте.
+#
+# Базовый образ по плавающему мажорному тегу, как node:20 у соседних стадий:
+# go.mod объявляет нужную версию тулчейна сам и догрузит её, если базовая
+# старше.
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1-trixie AS better-telegram-go-builder
+
+ARG BETTER_TELEGRAM_MCP_REPO
+ARG BETTER_TELEGRAM_MCP_COMMIT
+ARG TARGETARCH=""
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "${BETTER_TELEGRAM_MCP_REPO}"; \
+    git fetch -q --depth 1 origin "${BETTER_TELEGRAM_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    test -f go.mod || { echo "в этом коммите нет Go-сборки" >&2; exit 1; }; \
+    go test ./...; \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags "-s -w -X github.com/david-dvinskykh/better-telegram-mcp/internal/server.Version=${BETTER_TELEGRAM_MCP_COMMIT}" \
+      -o /out/better-telegram-mcp-go ./cmd/better-telegram-mcp; \
+    test -x /out/better-telegram-mcp-go
+
+# ===========================================================================
+# ops-mcp-builder — свой Go-сервер из этой же репы (servers/ops-mcp): SSH к
+# серверам клиники, Binotel и вотчер dev-loop'а «AI Bridge Dovira».
+# В all-in-one он клонируется по METAMCP_COMMIT; здесь берётся из контекста
+# сборки — тот же исходник, но без отдельного пина и без сети.
+# ===========================================================================
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1-trixie AS ops-mcp-builder
+
+ARG MCP_PROXY_PERSONAL_VERSION
+ARG TARGETARCH=""
+
+WORKDIR /src
+COPY servers/ops-mcp/ ./
+RUN set -eux; \
+    go test ./...; \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags "-s -w -X main.version=${MCP_PROXY_PERSONAL_VERSION}" \
+      -o /out/ops-mcp .; \
+    test -x /out/ops-mcp
+
+# ===========================================================================
+# bring-mcp-builder — свой Go-сервер Bring! (servers/bring-mcp), замена
+# TypeScript-пакета bring-mcp, который MetaMCP тянул через `npx ...@latest` при
+# каждом старте процесса.
+# ===========================================================================
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1-trixie AS bring-mcp-builder
+
+ARG MCP_PROXY_PERSONAL_VERSION
+ARG TARGETARCH=""
+
+WORKDIR /src
+COPY servers/bring-mcp/ ./
+RUN set -eux; \
+    go test ./...; \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags "-s -w -X main.version=${MCP_PROXY_PERSONAL_VERSION}" \
+      -o /out/bring-mcp .; \
+    test -x /out/bring-mcp
+
+FROM node:20-bookworm-slim AS zenmoney-ddvin-builder
+
+ARG ZENMONEY_DDVIN_COMMIT
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates git; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin https://github.com/david-dvinskykh/zenmoney-mcp-Ddvin.git; \
+    git fetch -q --depth 1 origin "${ZENMONEY_DDVIN_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    test -f package-lock.json || { echo "нет package-lock.json — сборка недетерминирована" >&2; exit 1; }; \
+    npm ci; \
+    npm run build; \
+    test -f build/index.js; \
+    npm prune --omit=dev; \
+    rm -rf .git src test .github
+
+# ===========================================================================
+# one-zenwallet-builder — MCP-сервер из репозитория приложения one-zenwallet
+# ===========================================================================
+#
+# В npm пакета нет (registry отдаёт 404 на one-zenwallet-mcp), поэтому собираем
+# из git. Сам сервер лежит в подкаталоге mcp-server, но собирается скриптами
+# корневого package.json: `npm ci` ставит devDependencies и хук prepare гоняет
+# esbuild, который кладёт бандл в mcp-server/dist/server.js.
+#
+# --legacy-peer-deps обязателен: react 19 не проходит peer-диапазон
+# vite-plugin-pwa, и обычный `npm ci` падает на ERESOLVE. Их собственный CI
+# ставит зависимости так же.
+#
+FROM node:20-bookworm-slim AS one-zenwallet-builder
+
+ARG ONE_ZENWALLET_COMMIT
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates git; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin https://github.com/david-dvinskykh/one-zenwallet.git; \
+    git fetch -q --depth 1 origin "${ONE_ZENWALLET_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    test -f package-lock.json || { echo "нет package-lock.json — сборка недетерминирована" >&2; exit 1; }; \
+    npm ci --legacy-peer-deps; \
+    test -f mcp-server/dist/server.js
+
+# Бандл собран с --packages=external, наружу у него ровно два импорта:
+# @modelcontextprotocol/sdk и zod. Тащить в образ всё prod-дерево приложения
+# (257 МБ: react, react-router, vite-plugin-pwa, workbox) незачем — собираем
+# минимальную раскладку на 27 МБ.
+#
+# package.json из mcp-server копируется не для красоты: в нём "type": "module",
+# без него node прочитает ESM-бандл как CommonJS и упадёт на первом import.
+#
+# Версии берём из package-lock.json репозитория, иначе диапазоны ^ уедут при
+# следующей пересборке.
+RUN set -eux; \
+    mkdir -p /out; \
+    cp /src/mcp-server/package.json /out/; \
+    cp -r /src/mcp-server/dist /out/dist; \
+    grep -q '"type"[[:space:]]*:[[:space:]]*"module"' /out/package.json; \
+    sdk="$(node -p "require('/src/package-lock.json').packages['node_modules/@modelcontextprotocol/sdk'].version")"; \
+    zod="$(node -p "require('/src/package-lock.json').packages['node_modules/zod'].version")"; \
+    echo "sdk=${sdk} zod=${zod}"; \
+    cd /out; \
+    npm install --omit=dev --ignore-scripts --no-audit --no-fund --no-package-lock \
+      "@modelcontextprotocol/sdk@${sdk}" "zod@${zod}"; \
+    test -f /out/node_modules/zod/package.json; \
+    test -d /out/node_modules/@modelcontextprotocol/sdk
+
+# ===========================================================================
+# gocardless-builder — MCP-сервер к GoCardless Bank Account Data API
+# ===========================================================================
+#
+# В npm пакета нет, поэтому собираем из git. Сборка строго по
+# package-lock.json: `npm install` подтянул бы свежие @modelcontextprotocol/sdk
+# и zod, а на них завязан вывод типов при tsc — ровно та же грабля, что у
+# zenmoney-ddvin.
+#
+# `npm ci` сам гоняет хук prepare (tsc), но build вызываем явно: хук могут
+# убрать из package.json, и тогда сборка молча оставит пустой build/.
+#
+FROM node:20-bookworm-slim AS gocardless-builder
+
+ARG GOCARDLESS_MCP_COMMIT
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates git; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin https://github.com/david-dvinskykh/GoCardless-Bank-Accaunt-Data-MCP.git; \
+    git fetch -q --depth 1 origin "${GOCARDLESS_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    test -f package-lock.json || { echo "нет package-lock.json — сборка недетерминирована" >&2; exit 1; }; \
+    npm ci; \
+    npm run build; \
+    test -f build/index.js; \
+    npm prune --omit=dev; \
+    rm -rf .git src test .github
+
+# ===========================================================================
+# curl-mcp-builder — MCP-обёртка над curl, сборка из исходников на Go
+# ===========================================================================
+#
+# Стадия закреплена на BUILDPLATFORM, а GOARCH берётся из TARGETARCH: иначе
+# при сборке arm64-образа на amd64-раннере компилятор шёл бы через QEMU и
+# стоил бы минуты вместо секунд. Go кросс-компилирует сам, CGO не нужен.
+#
+# TARGETARCH проставляет только BuildKit — см. комментарий в portainer-fetcher;
+# при классическом сборщике переменная пуста, и тогда GOARCH не задаётся, а Go
+# собирает под архитектуру самого раннера. Это верно ровно для случая, когда
+# сборщик и цель совпадают, — а классический сборщик иначе и не умеет.
+#
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.25-trixie AS curl-mcp-builder
+
+ARG CURL_MCP_REPO
+ARG CURL_MCP_COMMIT
+ARG TARGETARCH=""
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "${CURL_MCP_REPO}"; \
+    git fetch -q --depth 1 origin "${CURL_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -ldflags "-s -w -X main.version=${CURL_MCP_COMMIT}" \
+      -o /out/curl-mcp .; \
+    test -x /out/curl-mcp
+
+# ===========================================================================
+# receipts-mcp-builder — MCP-сервер выгрузки чеков, сборка из исходников на Go
+# ===========================================================================
+#
+# Тот же приём, что и у curl-mcp: стадия на BUILDPLATFORM, GOARCH из TARGETARCH,
+# Go кросс-компилирует сам, CGO не нужен (chromedp дёргает браузер по CDP, а не
+# линкуется с ним). go.mod требует Go 1.26 — отсюда образ golang:1.26.
+#
+# TARGETARCH проставляет только BuildKit — см. комментарий в portainer-fetcher;
+# при классическом сборщике переменная пуста, и тогда GOARCH не задаётся, а Go
+# собирает под архитектуру самого раннера.
+#
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.26-trixie AS receipts-mcp-builder
+
+ARG RECEIPTS_MCP_REPO
+ARG RECEIPTS_MCP_COMMIT
+ARG TARGETARCH=""
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "${RECEIPTS_MCP_REPO}"; \
+    git fetch -q --depth 1 origin "${RECEIPTS_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -ldflags "-s -w -X main.version=${RECEIPTS_MCP_COMMIT}" \
+      -o /out/receipts-mcp ./cmd/receipts-mcp; \
+    test -x /out/receipts-mcp
+
+# ===========================================================================
+# notion-proxy-search-builder — зеркало Notion с локальным поиском + весовой блоб
+# ===========================================================================
+#
+# Тот же приём, что у curl-mcp и receipts-mcp: стадия на BUILDPLATFORM, GOARCH из
+# TARGETARCH, Go кросс-компилирует сам, cgo не нужен (SQLite здесь —
+# modernc.org/sqlite, чистый Go, и эмбеддинги тоже считаются на Go).
+#
+# Стадия собирает бинарь дважды. Первый раз — под архитектуру раннера: им же
+# запускается квантование контрольной точки, а выполнить arm64-бинарь на
+# amd64-раннере нельзя (эмуляция стоила бы десятки минут). Второй раз — под
+# TARGETARCH, и этот попадает в образ.
+#
+# Тесты прогоняются здесь: в них лежит сверка int8-энкодера с float-референсом и
+# совместимость collection://-видов с SQL официального сервера. Падение теста
+# должно валить сборку, а не уезжать на плату.
+#
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1-trixie AS notion-proxy-search-builder
+
+ARG NOTION_PROXY_SEARCH_MCP_REPO
+ARG NOTION_PROXY_SEARCH_MCP_COMMIT
+ARG NOTION_SEARCH_MODEL_REPO
+ARG NOTION_SEARCH_MODEL_REVISION
+ARG TARGETARCH=""
+
+# Репозиторий сервера публичный, как и все остальные исходники этого образа,
+# поэтому клон анонимный и никаких секретов сборке не нужно. Берётся ровно
+# запиненный коммит: git fetch по SHA вместо клона ветки, чтобы сборка не
+# зависела от того, что в репозитории успело смениться.
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "${NOTION_PROXY_SEARCH_MCP_REPO}"; \
+    git fetch -q --depth 1 origin "${NOTION_PROXY_SEARCH_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    go test ./...; \
+    CGO_ENABLED=0 go build -trimpath -o /tmp/nps-host ./cmd/notion-proxy-search-mcp; \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -ldflags "-s -w -X main.Version=${NOTION_PROXY_SEARCH_MCP_COMMIT}" \
+      -o /out/notion-proxy-search-mcp ./cmd/notion-proxy-search-mcp; \
+    test -x /out/notion-proxy-search-mcp
+
+# Контрольная точка весит 470 МБ в float32; в образ попадает только
+# квантованный блоб (118,7 МБ, проверено). convert делает самопроверку — грузит
+# блоб обратно и требует единичный вектор, — поэтому битый блоб валит сборку
+# здесь. Сама конвертация занимает около 5 секунд на x86-раннере.
+RUN set -eux; \
+    mkdir -p /tmp/model; \
+    for name in config.json tokenizer.json model.safetensors; do \
+      curl -fsSL --retry 3 --retry-delay 2 \
+        -o "/tmp/model/${name}" \
+        "https://huggingface.co/${NOTION_SEARCH_MODEL_REPO}/resolve/${NOTION_SEARCH_MODEL_REVISION}/${name}"; \
+    done; \
+    /tmp/nps-host convert \
+      -model-dir /tmp/model \
+      -out /out/model.npse \
+      -name "${NOTION_SEARCH_MODEL_REPO}@${NOTION_SEARCH_MODEL_REVISION}"; \
+    rm -rf /tmp/model /tmp/nps-host; \
+    ls -l /out/model.npse
+
+# ===========================================================================
+# runner — прокси Bridgetto + серверы
+# ===========================================================================
+FROM ${PROXY_IMAGE} AS runner
+
+ARG TELEGRAM_MCP_COMMIT
+ARG BETTER_TELEGRAM_MCP_REPO
+ARG BETTER_TELEGRAM_MCP_COMMIT
+ARG MCP_SERVER_FETCH_VERSION
+ARG INSTAGRAM_DM_VERSION
+ARG ZENMONEY_NPM_VERSION
+
+USER root
+
+LABEL org.opencontainers.image.source="https://github.com/david-dvinskykh/metamcp"
+LABEL org.opencontainers.image.description="Bridgetto MCP proxy with baked telegram, instagram, zenmoney, one-zenwallet, gocardless, portainer, curl, lightpanda, receipts, ops, bring and notion-proxy-search MCP servers"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.title="mcp-proxy-personal"
+
+# Базовый образ прокси уже несёт uv, git, curl, tini и Node 22. curl ещё раз
+# заявлен явно: curl-mcp не реализует HTTP сам, а зовёт бинарник, и базу
+# прокси могут облегчить.
+#
+# Python. Системный в bookworm — 3.11, а better-telegram-mcp требует ровно 3.13
+# (Requires-Python ==3.13.*), telegram-mcp — >=3.10. Поэтому ставим 3.13 через
+# uv в общий каталог /opt/uv-python: сборка идёт от root, и интерпретатор в
+# /root был бы недоступен процессу от `node`. Все дальнейшие uv-команды идут с
+# UV_PYTHON_DOWNLOADS=never построчно, а не через ENV: в рантайме запрет
+# вреден — серверу, добавленному позже (`uvx ...`) и требующему другой Python,
+# нужно уметь его скачать (каталог ниже доступен node на запись).
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends curl ca-certificates; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+RUN set -eux; \
+    uv python install 3.13; \
+    chown -R node:node /opt/uv-python; \
+    /opt/uv-python/cpython-3.13*/bin/python3 --version
+
+# --- telegram-mcp ---------------------------------------------------------
+RUN set -eux; \
+    mkdir -p /home/node/.cache/uv; \
+    git init -q /opt/telegram-mcp; \
+    cd /opt/telegram-mcp; \
+    git remote add origin https://github.com/chigwell/telegram-mcp.git; \
+    git fetch -q --depth 1 origin "${TELEGRAM_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    rm -rf .git tests screenshots; \
+    test -f uv.lock; \
+    UV_PYTHON_DOWNLOADS=never uv sync --frozen --no-dev --python 3.13; \
+    chown -R node:node /opt/telegram-mcp /home/node/.cache/uv
+
+# --- better-telegram-mcp --------------------------------------------------
+# Ставим в образ вместо `uvx better-telegram-mcp` в конфиге MetaMCP.
+#
+# uvx резолвит зависимости при каждом запуске с пустым кэшем — а кэш обнуляется
+# при любом пересоздании контейнера. 2026-07-31 это уронило сервер: вышел
+# mcp 2.0.0, где убран модуль mcp.server.fastmcp, а пакет требует всего лишь
+# mcp[cli]>=1.28.1, без верхней границы. Отсюда `--with "mcp[cli]<2.0"`.
+#
+# UV_TOOL_BIN_DIR=/usr/local/bin задан ещё в базовом образе uv, поэтому
+# консольная команда better-telegram-mcp сама оказывается в PATH.
+ENV UV_TOOL_DIR=/opt/uv-tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin
+
+# chown кэша в конце — ОБЯЗАТЕЛЬНО, а не гигиена. `uv tool install` идёт от
+# root и пишет в общий UV_CACHE_DIR, который лежит в /home/node. Без возврата
+# владельца telegram-mcp, запускаемый от node, падает на `uv run` с
+# "failed to symlink ... Permission denied (os error 13)" — ему не разложить
+# пакеты из root-овых каталогов кэша. Проверено на живом контейнере 2026-07-31.
+RUN set -eux; \
+    UV_PYTHON_DOWNLOADS=never uv tool install --python 3.13 \
+      --with "mcp[cli]<2.0" \
+      "better-telegram-mcp @ git+${BETTER_TELEGRAM_MCP_REPO}@${BETTER_TELEGRAM_MCP_COMMIT}"; \
+    chown -R node:node /opt/uv-tools "${UV_CACHE_DIR}"; \
+    command -v better-telegram-mcp; \
+    head -1 /usr/local/bin/better-telegram-mcp | grep -q '^#!/opt/uv-tools/'; \
+    py=/opt/uv-tools/better-telegram-mcp/bin/python; \
+    test -x "${py}"; \
+    "${py}" -c "import better_telegram_mcp, mcp.server.fastmcp"; \
+    "${py}" -c "import importlib.metadata as m; v=m.version('mcp'); assert int(v.split('.')[0]) < 2, v; print('mcp', v)"
+
+# --- better-telegram-mcp-go -----------------------------------------------
+# Go-сборка того же форка, отдельной командой. Питоновский better-telegram-mcp
+# выше остаётся рабочим сервером; эта команда ничего не подменяет, пока в
+# MetaMCP не заведён сервер, который её зовёт.
+#
+# Запуск бинарника проверяется здесь, а не в стадии сборки: там он собран под
+# TARGETARCH и на сборщике может просто не запуститься.
+COPY --from=better-telegram-go-builder /out/better-telegram-mcp-go /usr/local/bin/better-telegram-mcp-go
+RUN set -eux; \
+    chmod 0755 /usr/local/bin/better-telegram-mcp-go; \
+    command -v better-telegram-mcp-go; \
+    better-telegram-mcp-go version; \
+    better-telegram-mcp-go --help | grep -q 'auth --bot-token'
+
+# --- ops-mcp --------------------------------------------------------------
+# `ops-mcp` — stdio-сервер для MetaMCP (ключи — в env сервера в MetaMCP),
+# `ops-mcp watch` — вотчер dev-loop'а, отдельный сервис стека (megamcp-stack.yml).
+COPY --from=ops-mcp-builder /out/ops-mcp /usr/local/bin/ops-mcp
+RUN set -eux; \
+    chmod 0755 /usr/local/bin/ops-mcp; \
+    ops-mcp version
+
+# --- bring-mcp ------------------------------------------------------------
+# Bring! списки покупок, stdio. BRING_EMAIL / BRING_PASSWORD — в env сервера
+# в MetaMCP; сессия кэшируется в /var/lib/bring-mcp (без VOLUME: кэш одноразовый,
+# потеря при пересоздании контейнера стоит один логин).
+COPY --from=bring-mcp-builder /out/bring-mcp /usr/local/bin/bring-mcp
+RUN set -eux; \
+    chmod 0755 /usr/local/bin/bring-mcp; \
+    bring-mcp version
+
+# --- mcp-server-fetch -----------------------------------------------------
+# Тот же приём, что и с better-telegram-mcp: `uv tool install` кладёт в
+# /usr/local/bin шим с шебангом на питон своего venv, поэтому сервер стартует
+# без процесса-родителя uv и без резолва зависимостей в рантайме.
+RUN set -eux; \
+    UV_PYTHON_DOWNLOADS=never uv tool install --python 3.13 \
+      "mcp-server-fetch==${MCP_SERVER_FETCH_VERSION}"; \
+    chown -R node:node /opt/uv-tools "${UV_CACHE_DIR}"; \
+    command -v mcp-server-fetch; \
+    head -1 /usr/local/bin/mcp-server-fetch | grep -q '^#!/opt/uv-tools/'
+
+# --- npm-серверы ----------------------------------------------------------
+# Версии зафиксированы: `npm install -g <pkg>` без версии при каждой пересборке
+# ставит свежий релиз, и образ перестаёт быть воспроизводимым.
+RUN set -eux; \
+    npm install -g \
+      "mcp-instagram-dm@${INSTAGRAM_DM_VERSION}" \
+      "zenmoney-mcp@${ZENMONEY_NPM_VERSION}"; \
+    npm cache clean --force; \
+    command -v mcp-instagram-dm; \
+    command -v zenmoney-mcp
+
+# --- portainer-mcp --------------------------------------------------------
+COPY --from=portainer-fetcher /tmp/portainer-mcp /usr/local/lib/portainer-mcp/portainer-mcp
+
+# --- zenmoney-mcp-ddvin (форк) --------------------------------------------
+COPY --from=zenmoney-ddvin-builder --chown=node:node /src /usr/local/lib/zenmoney-mcp-ddvin
+
+# --- one-zenwallet-mcp ----------------------------------------------------
+COPY --from=one-zenwallet-builder --chown=node:node /out /usr/local/lib/one-zenwallet-mcp
+
+# --- gocardless-mcp -------------------------------------------------------
+#
+# В конфигурации сервера в MetaMCP: команда `gocardless-mcp`, без аргументов,
+# и пара секретов Bank Account Data в окружении — GOCARDLESS_SECRET_ID и
+# GOCARDLESS_SECRET_KEY (создаются в кабинете bankaccountdata.gocardless.com,
+# раздел Developers → User secrets). Всё остальное у сервера с умолчаниями.
+COPY --from=gocardless-builder --chown=node:node /src /usr/local/lib/gocardless-mcp
+
+# --- curl-mcp -------------------------------------------------------------
+#
+# В конфигурации сервера в MetaMCP: команда `curl-mcp`, без аргументов.
+# Инструменты: curl_request (любой метод), curl_download, curl_raw и
+# curl_version. Ограничения правятся окружением — CURL_MCP_MAX_RESPONSE_BYTES,
+# CURL_MCP_TIMEOUT_SECONDS, CURL_MCP_ALLOW_RAW=0 убирает сырой режим.
+COPY --from=curl-mcp-builder /out/curl-mcp /usr/local/lib/curl-mcp/curl-mcp
+
+# --- receipts-mcp ---------------------------------------------------------
+#
+# В конфигурации сервера в MetaMCP: команда `receipts-mcp`, без аргументов
+# (дефолт — stdio; флаг --http нужен только для отдельного веб-логина, который
+# в составе MetaMCP не используется). Инструменты выгружают чеки из Lidl, Action
+# и Allegro и ведут вход в аккаунты; секреты сервер не принимает в окружении, а
+# хранит сам — зашифрованный AES-256-GCM файл в RECEIPTS_STATE_DIR, ключ рядом
+# (0600). Каталог делаем записываемым и кладём под том, иначе учётки теряются
+# при каждом пересоздании контейнера.
+COPY --from=receipts-mcp-builder /out/receipts-mcp /usr/local/lib/receipts-mcp/receipts-mcp
+
+# --- notion-proxy-search --------------------------------------------------
+#
+# В конфигурации сервера в MetaMCP: команда `notion-proxy-search-mcp`, без
+# аргументов (по умолчанию это режим serve — MCP на stdio). В окружении нужен
+# один секрет — NOTION_TOKEN, внутренняя интеграция Notion с правами только на
+# чтение, расшаренная со страницей «База знаний».
+#
+# Первый serve сам поднимает демона-синхронизатор (setsid, лог в
+# NPS_DATA_DIR/daemon.log): он переживает сессии, держит весовой блоб
+# отображённым один раз на хост и владеет зеркалом. Stdio-процесс весов не
+# грузит вовсе, поэтому параллельные сессии не умножают 118 МБ.
+#
+# Каталог данных под томом: иначе при каждом пересоздании контейнера зеркало
+# собиралось бы заново, а это обход всего воркспейса и часы счёта эмбеддингов.
+# NPS_EMBED_WORKERS=2 в конфигурации сервера оставляет половину ядер остальным
+# контейнерам на время первичной индексации, а NPS_EMBED_SKIP_SOURCES держит
+# 🗓️ Журнал вне векторного индекса: 111 карточек дня (одна — 135 799 знаков)
+# дают порядка 1,7 млн токенов против 250 тысяч во всех остальных базах вместе,
+# а ищут их по дате и точной строке, то есть SQL и BM25. Подробности и числа —
+# в docs/DESIGN.ru.md проксируемого репозитория.
+COPY --from=notion-proxy-search-builder /out/notion-proxy-search-mcp /usr/local/lib/notion-proxy-search-mcp/notion-proxy-search-mcp
+COPY --from=notion-proxy-search-builder /out/model.npse /usr/local/lib/notion-proxy-search-mcp/model.npse
+
+# --- lightpanda -----------------------------------------------------------
+COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpanda
+
+# --- обёртки и записываемые каталоги --------------------------------------
+#
+# Рабочий каталог серверов не принадлежит node заранее, а MCP-серверы запускаются от node.
+# portainer-mcp создаёт при старте tools.yaml в текущей директории,
+# zenmoney — файл кэша, gocardless-mcp — кэш токенов GoCardless (access живёт
+# сутки, refresh — 30 дней). Без записываемого каталога они падают либо жгут
+# по запросу токена на каждый рестарт контейнера.
+#
+# ВНИМАНИЕ на имена: npm-пакет занимает /usr/local/bin/zenmoney-mcp, поэтому
+# форк называется zenmoney-mcp-ddvin — ровно как его собственный bin
+# в package.json. Иначе один затрёт другой.
+#
+# Домашний каталог node отдаём целиком: uv от root создаёт в нём .local и
+# .cache, а lightpanda без прав на ~/.local/share пишет в stderr «create data
+# dir err=AccessDenied» (MetaMCP показывает это как ошибку сервера).
+#
+# lightpanda в MCP-режиме по умолчанию не пишет на диск, но каталог ему всё
+# равно нужен: с --http-cache-dir/--cookie-jar он пишет в текущую директорию,
+# а рабочий каталог процесса прокси для них не предназначен.
+#
+# telegram-mcp зовёт .venv напрямую, а не через `uv run`. `uv run` не
+# завершается после старта: он остаётся процессом-родителем питона на всё время
+# жизни сервера и стоит 29-46 МБ RSS (замер в живом контейнере 2026-09-04).
+# Venv собран на этапе сборки `uv sync --frozen --no-dev`, поэтому резолвить в
+# рантайме нечего — `--frozen --no-dev` здесь были бы no-op. MetaMCP держит до
+# пяти копий каждого stdio-сервера (maxConnectionsPerServer), так что каждая
+# лишняя обёртка умножается на пять.
+#
+# LIGHTPANDA_DISABLE_TELEMETRY выставляется в обёртке, а не в ENV образа:
+# без него сервер на каждом запуске сыплет в stderr «telemetry ... flush
+# err=CouldntConnect» (стенд закрыт от исходящих соединений), а MetaMCP
+# показывает stderr stdio-сервера как ошибки. Значение перекрывается из
+# конфигурации сервера, если телеметрию захочется вернуть.
+#
+RUN set -eux; \
+    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp/downloads /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp /var/lib/ops-mcp/devloop /var/lib/bring-mcp; \
+    chown -R node:node /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp /var/lib/ops-mcp /var/lib/bring-mcp; \
+    \
+    chown -R node:node /home/node; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'TOOLS="${PORTAINER_MCP_TOOLS:-/var/lib/portainer-mcp/tools.yaml}"' \
+      'cd /var/lib/portainer-mcp' \
+      'exec /usr/local/lib/portainer-mcp/portainer-mcp -tools "$TOOLS" "$@"' \
+      > /usr/local/bin/portainer-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'export ZENMONEY_CACHE_DIR="${ZENMONEY_CACHE_DIR:-/var/lib/zenmoney-mcp-ddvin}"' \
+      'cd /var/lib/zenmoney-mcp-ddvin' \
+      'exec node /usr/local/lib/zenmoney-mcp-ddvin/build/index.js "$@"' \
+      > /usr/local/bin/zenmoney-mcp-ddvin; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'cd /opt/telegram-mcp' \
+      'exec /opt/telegram-mcp/.venv/bin/python3 main.py "$@"' \
+      > /usr/local/bin/telegram-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'export ONE_ZENWALLET_MCP_STATE_DIR="${ONE_ZENWALLET_MCP_STATE_DIR:-/var/lib/one-zenwallet-mcp}"' \
+      'cd /var/lib/one-zenwallet-mcp' \
+      'exec node /usr/local/lib/one-zenwallet-mcp/dist/server.js "$@"' \
+      > /usr/local/bin/one-zenwallet-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'export GOCARDLESS_CACHE_DIR="${GOCARDLESS_CACHE_DIR:-/var/lib/gocardless-mcp}"' \
+      'cd /var/lib/gocardless-mcp' \
+      'exec node /usr/local/lib/gocardless-mcp/build/index.js "$@"' \
+      > /usr/local/bin/gocardless-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'export CURL_MCP_DOWNLOAD_DIR="${CURL_MCP_DOWNLOAD_DIR:-/var/lib/curl-mcp/downloads}"' \
+      'cd /var/lib/curl-mcp' \
+      'exec /usr/local/lib/curl-mcp/curl-mcp "$@"' \
+      > /usr/local/bin/curl-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'export RECEIPTS_STATE_DIR="${RECEIPTS_STATE_DIR:-/var/lib/receipts-mcp}"' \
+      'cd /var/lib/receipts-mcp' \
+      'exec /usr/local/lib/receipts-mcp/receipts-mcp "$@"' \
+      > /usr/local/bin/receipts-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'export NPS_DATA_DIR="${NPS_DATA_DIR:-/var/lib/notion-proxy-search-mcp}"' \
+      'export NPS_MODEL="${NPS_MODEL:-/usr/local/lib/notion-proxy-search-mcp/model.npse}"' \
+      'cd "$NPS_DATA_DIR"' \
+      'exec /usr/local/lib/notion-proxy-search-mcp/notion-proxy-search-mcp "$@"' \
+      > /usr/local/bin/notion-proxy-search-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'export LIGHTPANDA_DISABLE_TELEMETRY="${LIGHTPANDA_DISABLE_TELEMETRY:-true}"' \
+      'cd /var/lib/lightpanda' \
+      'exec /usr/local/lib/lightpanda/lightpanda "$@"' \
+      > /usr/local/bin/lightpanda; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'exec /usr/local/bin/lightpanda mcp "$@"' \
+      > /usr/local/bin/lightpanda-mcp; \
+    \
+    chmod 0755 \
+      /usr/local/bin/portainer-mcp \
+      /usr/local/bin/zenmoney-mcp-ddvin \
+      /usr/local/bin/telegram-mcp \
+      /usr/local/bin/one-zenwallet-mcp \
+      /usr/local/bin/gocardless-mcp \
+      /usr/local/bin/curl-mcp \
+      /usr/local/bin/receipts-mcp \
+      /usr/local/bin/notion-proxy-search-mcp \
+      /usr/local/bin/lightpanda \
+      /usr/local/bin/lightpanda-mcp
+
+
+USER node
+
+VOLUME ["/var/lib/mcp-proxy", "/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp", "/var/lib/gocardless-mcp", "/var/lib/receipts-mcp", "/var/lib/notion-proxy-search-mcp", "/var/lib/ops-mcp"]
+
+# ENTRYPOINT, CMD, EXPOSE 8080/8081, WORKDIR и переменные MCP_PROXY_* — из
+# базового образа прокси: этот слой только добавляет серверы.
