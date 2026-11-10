@@ -6,14 +6,13 @@ name: Bump pinned components
 #
 # Цепочка целиком:
 #   этот воркфлоу по расписанию -> scripts/bump_pins.py переписывает ARG'и ->
-#   коммит в дефолтную ветку -> сборка arm64-образа (тот же docker-arm64.yml,
-#   вызванный как переиспользуемый воркфлоу) -> тег latest в ghcr ->
-#   watchtower на Raspberry Pi выкатывает новый контейнер.
+#   коммит в дефолтную ветку -> вебхук push -> пайплайн metamcp-ci в Bridgetto
+#   собирает arm64-образ -> тег latest в ghcr -> watchtower на Raspberry Pi
+#   выкатывает новый контейнер.
 #
-# Почему сборка вызывается через `uses:`, а не оставлена на триггер push:
-# пуш, сделанный с GITHUB_TOKEN, намеренно не запускает другие воркфлоу
-# (защита от рекурсии). Без явного вызова коммит бота лёг бы в ветку, а образ
-# так и остался бы старым.
+# Сборки здесь больше нет: собирает Bridgetto. Пуш, сделанный с GITHUB_TOKEN,
+# не запускает другие воркфлоу GitHub, но вебхук репозитория он отправляет как
+# обычно — поэтому коммит бота сам запускает сборку в Bridgetto.
 #
 # Пины остаются в git: каждое автообновление видно в истории и откатывается
 # одним `git revert`.
@@ -92,15 +91,3 @@ jobs:
             echo "Всё уже на последних версиях." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-  build:
-    needs: bump
-    if: needs.bump.outputs.changed == 'true'
-    permissions:
-      contents: read
-      packages: write
-      attestations: write
-      id-token: write
-    uses: ./.github/workflows/docker-arm64.yml
-    with:
-      ref: ${{ needs.bump.outputs.sha }}
-    secrets: inherit
