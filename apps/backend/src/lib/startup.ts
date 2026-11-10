@@ -2,6 +2,7 @@ import { ServerParameters } from "@repo/zod-types";
 
 import { mcpServersRepository, namespacesRepository } from "../db/repositories";
 import { initializeEnvironmentConfiguration } from "./bootstrap.service";
+import { startDeclarativeConfig } from "./declarative-config/apply";
 import { metaMcpServerPool } from "./metamcp";
 import { serverErrorTracker } from "./metamcp/server-error-tracker";
 import { convertDbServerToParams } from "./metamcp/utils";
@@ -38,6 +39,10 @@ export async function initializeOnStartup(): Promise<void> {
   } else {
     console.log("Environment bootstrap disabled via BOOTSTRAP_ENABLE=false");
   }
+
+  // Declarative config (e.g. Bridgetto's /etc/bridgetto/config.json): applied
+  // before the idle sessions start, then re-read periodically.
+  await startDeclarativeConfig();
 }
 
 /**
