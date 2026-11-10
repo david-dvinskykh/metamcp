@@ -59,12 +59,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/bump_pins.py
-          if git diff --quiet -- Dockerfile.all-in-one; then
+          python3 scripts/bump_pins.py --check
+          if git diff --quiet -- Dockerfile.all-in-one Dockerfile.mcp-proxy; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "summary=$(cat bump-summary.txt)" >> "$GITHUB_OUTPUT"
-            git --no-pager diff -- Dockerfile.all-in-one
+            git --no-pager diff -- Dockerfile.all-in-one Dockerfile.mcp-proxy
           fi
 
       - name: Commit and push
@@ -76,7 +77,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Dockerfile.all-in-one
+          git add Dockerfile.all-in-one Dockerfile.mcp-proxy
           git commit -m "chore(deps): bump pinned components" -m "${SUMMARY}"
           git push
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -101,6 +102,21 @@ jobs:
       attestations: write
       id-token: write
     uses: ./.github/workflows/docker-arm64.yml
+    with:
+      ref: ${{ needs.bump.outputs.sha }}
+    secrets: inherit
+
+  # Производный образ прокси несёт те же пины: пуш бота не поднимает его
+  # воркфлоу (GITHUB_TOKEN), поэтому вызываем явно, как и docker-arm64.yml.
+  build-mcp-proxy-personal:
+    needs: bump
+    if: needs.bump.outputs.changed == 'true'
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    uses: ./.github/workflows/mcp-proxy-personal.yml
     with:
       ref: ${{ needs.bump.outputs.sha }}
     secrets: inherit

@@ -21,6 +21,14 @@ name: Build and Push mcp-proxy-personal (arm64)
 # Для latest это приемлемо, потому что образ меняется только вместе с ними.
 
 on:
+  # Вызов из bump-pins.yml: пуш бота с GITHUB_TOKEN этот воркфлоу не запускает,
+  # поэтому автообновление пинов зовёт сборку явно и передаёт свой коммит.
+  workflow_call:
+    inputs:
+      ref:
+        description: "Коммит или ветка для сборки. Пусто — коммит текущего запуска"
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       proxy_image:
@@ -69,6 +77,13 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      # Пины общие с Dockerfile.all-in-one и двигаются только автоматикой
+      # (scripts/bump_pins.py); расхождение — ошибка, а не повод править руками.
+      - name: Check pins are in step with Dockerfile.all-in-one
+        run: python3 scripts/bump_pins.py --check
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -113,7 +128,7 @@ jobs:
           # строка уходит в docker build как KEY=VALUE.
           build-args: |
             PROXY_IMAGE=${{ inputs.proxy_image || 'ghcr.io/david-dvinskykh/mcp-proxy:latest' }}
-            MCP_PROXY_PERSONAL_VERSION=${{ github.sha }}
+            MCP_PROXY_PERSONAL_VERSION=${{ inputs.ref || github.sha }}
           cache-from: type=gha,scope=mcp-proxy-personal-arm64
           # ignore-error: кэш GitHub Actions ограничен 10 ГБ — это не повод
           # валить сборку.

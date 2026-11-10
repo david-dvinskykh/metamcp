@@ -63,6 +63,9 @@ docker build -f Dockerfile.mcp-proxy --build-arg PROXY_IMAGE=mcp-proxy:test -t m
 
 ## Keeping pins in sync
 
-The pins are copied from `Dockerfile.all-in-one`. `scripts/bump_pins.py` only rewrites that file,
-so copy bumped `ARG` values here while both images are in use. To pick up a new proxy base, run the
-workflow manually (`workflow_dispatch`).
+Pins are never edited by hand. `scripts/bump_pins.py` (run nightly by `bump-pins.yml`) bumps every pin
+in `Dockerfile.all-in-one` and writes the same values into every shared `ARG` of `Dockerfile.mcp-proxy`
+(also repairing a drifted copy); the nightly commit contains both files and calls
+`mcp-proxy-personal.yml` to rebuild the image. `python3 scripts/bump_pins.py --check` exits 1 when the
+shared pins of the two files differ; it runs in `bump-pins.yml` and as the first step of
+`mcp-proxy-personal.yml`. To pick up a new proxy base, run the workflow manually (`workflow_dispatch`).
