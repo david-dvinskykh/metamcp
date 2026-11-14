@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Resolve the newest upstream version of every component pinned in
-Dockerfile.all-in-one and rewrite the ARG defaults in place.
+Dockerfile.all-in-one and rewrite the ARG defaults in place. Every ARG default
+the two Dockerfiles share (Dockerfile.all-in-one and Dockerfile.mcp-proxy, the
+derived Bridgetto proxy image) is kept identical: bumps are applied to both, and
+`--check` fails when they differ.
 
 Run by .github/workflows/bump-pins.yml on a schedule. A change to the file is
 committed to the default branch, which triggers docker-arm64.yml, which
@@ -11,6 +14,7 @@ one `git revert`.
 Usage:
     python3 scripts/bump_pins.py            # rewrite the Dockerfile
     python3 scripts/bump_pins.py --dry-run  # only report what would change
+    python3 scripts/bump_pins.py --check    # exit 1 if shared pins of the two files differ
 """
 
 from __future__ import annotations
@@ -25,7 +29,11 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DOCKERFILE = Path(__file__).resolve().parent.parent / "Dockerfile.all-in-one"
+ROOT = Path(__file__).resolve().parent.parent
+DOCKERFILE = ROOT / "Dockerfile.all-in-one"
+# Derived image (Bridgetto proxy + the same servers). Its pins are never edited
+# by hand: they are copied from DOCKERFILE here.
+DERIVED = ROOT / "Dockerfile.mcp-proxy"
 UA = {"User-Agent": "bump-pins (github actions)"}
 
 
@@ -191,10 +199,54 @@ def replace_arg(text: str, arg: str, value: str, stage: str | None) -> tuple[str
     return text[:lo] + window + text[hi:], match.group(2)
 
 
+def arg_defaults(text: str) -> dict[tuple[str | None, str], str]:
+    """(stage, name) -> default of every `ARG NAME=value` line. stage is None
+    for ARGs declared before the first FROM."""
+    out: dict[tuple[str | None, str], str] = {}
+    stage: str | None = None
+    seen_from = False
+    for line in text.split("\n"):
+        m = re.match(r"^FROM .* AS (\S+)\s*$", line)
+        if m:
+            stage, seen_from = m.group(1), True
+        elif line.startswith("FROM "):
+            stage, seen_from = f"#unnamed{len(out)}", True
+        m = re.match(r"^ARG ([A-Za-z0-9_]+)=(\S*)$", line)
+        if m:
+            out[(stage if seen_from else None, m.group(1))] = m.group(2)
+    return out
+
+
+def drift(source: str, derived: str) -> list[str]:
+    """Shared pins (same stage, same name) whose defaults differ."""
+    a, b = arg_defaults(source), arg_defaults(derived)
+    return [f"{stage or 'global'}/{name}: all-in-one={a[k]} mcp-proxy={b[k]}"
+            for k in sorted(a.keys() & b.keys(), key=str)
+            for stage, name in [k] if a[k] != b[k]]
+
+
+def sync_derived(source: str, derived: str) -> str:
+    """Copy every shared ARG default from source into derived."""
+    a = arg_defaults(source)
+    for (stage, name), value in sorted(arg_defaults(derived).items(), key=str):
+        if (stage, name) in a and a[(stage, name)] != value:
+            derived, _ = replace_arg(derived, name, a[(stage, name)], stage)
+    return derived
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--check", action="store_true",
+                        help="only verify that shared pins of both Dockerfiles match")
     args = parser.parse_args()
+
+    if args.check:
+        diffs = drift(DOCKERFILE.read_text(), DERIVED.read_text())
+        for d in diffs:
+            print(f"!! pin drift: {d}", file=sys.stderr)
+        print("pins in step" if not diffs else f"{len(diffs)} pin(s) differ; run scripts/bump_pins.py")
+        return 1 if diffs else 0
 
     text = DOCKERFILE.read_text()
     changes: list[str] = []
@@ -228,14 +280,23 @@ def main() -> int:
         changes.append(f"{pin.arg}: {old[:12]} -> {newest[:12]}" if len(newest) == 40
                        else f"{pin.arg}: {old} -> {newest}")
 
+    # Dockerfile.mcp-proxy follows Dockerfile.all-in-one, also when nothing was
+    # bumped today: a drifted copy is repaired instead of left behind.
+    derived_before = DERIVED.read_text()
+    derived = sync_derived(text, derived_before)
+    if derived != derived_before and not changes:
+        changes.append("Dockerfile.mcp-proxy re-synced with Dockerfile.all-in-one")
+
     if not changes:
         print(f"nothing to bump ({failures} upstream(s) skipped)")
         return 0
 
     if args.dry_run:
-        print("\n--dry-run: Dockerfile not written")
+        print("\n--dry-run: Dockerfiles not written")
     else:
         DOCKERFILE.write_text(text)
+        DERIVED.write_text(derived)
+    assert not drift(text, derived), drift(text, derived)
 
     summary = "; ".join(changes)
     print(f"\nsummary: {summary}")

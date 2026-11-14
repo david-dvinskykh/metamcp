@@ -1,0 +1,220 @@
+name: Build and Push mcp-proxy-personal (arm64)
+
+# Собирает Dockerfile.mcp-proxy — прокси Bridgetto
+# (ghcr.io/david-dvinskykh/mcp-proxy) с запечёнными stdio-MCP-серверами Дэвида —
+# под linux/arm64 и публикует ghcr.io/<owner>/mcp-proxy-personal:
+#   • latest      — только с дефолтной ветки;
+#   • sha-<short> — с любой ветки.
+#
+# Как и docker-arm64.yml (all-in-one), собирается нативно на ubuntu-24.04-arm:
+# это единственная платформа Дэвида, а Go/Zig-бинарники и uv-колёса arm64
+# через QEMU стоили бы часы. amd64 в образ не входит — в all-in-one его тоже нет.
+#
+# Когда собирается:
+#   • пуш в ai-dev, main или claude/**, если тронуты Dockerfile.mcp-proxy,
+#     servers/** (ops-mcp и bring-mcp собираются из этих исходников) или сам
+#     воркфлоу;
+#   • ручной запуск — всегда. Он нужен и для обновления базы: новый образ
+#     прокси сам по себе пуш в этот репозиторий не делает.
+#
+# paths — фильтр триггера: пуш, не затронувший эти пути, образ не пересобирает.
+# Для latest это приемлемо, потому что образ меняется только вместе с ними.
+
+on:
+  # Вызов из bump-pins.yml: пуш бота с GITHUB_TOKEN этот воркфлоу не запускает,
+  # поэтому автообновление пинов зовёт сборку явно и передаёт свой коммит.
+  workflow_call:
+    inputs:
+      ref:
+        description: "Коммит или ветка для сборки. Пусто — коммит текущего запуска"
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      proxy_image:
+        description: "Образ прокси, на который кладутся серверы"
+        type: string
+        default: ghcr.io/david-dvinskykh/mcp-proxy:latest
+  push:
+    branches:
+      - main
+      - ai-dev
+      - "claude/**"
+    paths:
+      - Dockerfile.mcp-proxy
+      - "servers/**"
+      - .github/workflows/mcp-proxy-personal.yml
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/mcp-proxy-personal
+
+concurrency:
+  group: mcp-proxy-personal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    steps:
+      # Слои Go/Node-билдеров и блоб модели большие, а на раннере места немного.
+      - name: Free disk space
+        run: |
+          set -x
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/share/swift \
+                      "$AGENT_TOOLSDIRECTORY" || true
+          docker system prune -af || true
+          df -h /
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      # Пины общие с Dockerfile.all-in-one и двигаются только автоматикой
+      # (scripts/bump_pins.py); расхождение — ошибка, а не повод править руками.
+      - name: Check pins are in step with Dockerfile.all-in-one
+        run: python3 scripts/bump_pins.py --check
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # IMAGE_NAME строится от repository_owner, а не от github.repository:
+      # репозиторий называется metamcp, а пакет — mcp-proxy-personal. GHCR
+      # требует нижний регистр, поэтому owner приводим к нему явно.
+      - name: Lowercase image name
+        run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+          labels: |
+            org.opencontainers.image.title=mcp-proxy-personal
+            org.opencontainers.image.description=Bridgetto MCP proxy with baked stdio MCP servers (telegram, ops, bring, zenmoney, gocardless, portainer, curl, lightpanda, receipts, notion-proxy-search)
+
+      - name: Build and push arm64 image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.mcp-proxy
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Внутри блока build-args комментарии писать нельзя: там каждая
+          # строка уходит в docker build как KEY=VALUE.
+          build-args: |
+            PROXY_IMAGE=${{ inputs.proxy_image || 'ghcr.io/david-dvinskykh/mcp-proxy:latest' }}
+            MCP_PROXY_PERSONAL_VERSION=${{ inputs.ref || github.sha }}
+          cache-from: type=gha,scope=mcp-proxy-personal-arm64
+          # ignore-error: кэш GitHub Actions ограничен 10 ГБ — это не повод
+          # валить сборку.
+          cache-to: type=gha,mode=max,scope=mcp-proxy-personal-arm64,ignore-error=true
+
+      # Проверяем именно опубликованный образ: архитектуру, что прокси остался
+      # точкой входа и что каждый сервер на месте и запускается.
+      - name: Smoke test published image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euxo pipefail
+          LIGHTPANDA_EXPECTED=$(sed -n 's/^ARG LIGHTPANDA_VERSION=//p' Dockerfile.mcp-proxy)
+          test -n "$LIGHTPANDA_EXPECTED"
+          docker buildx prune -af || true
+          docker pull "$IMAGE"
+
+          test "$(docker image inspect --format '{{.Architecture}}' "$IMAGE")" = "arm64"
+          test "$(docker image inspect --format '{{.Config.User}}' "$IMAGE")" = "node"
+          docker image inspect --format '{{json .Config.Entrypoint}}' "$IMAGE" | grep -q mcp-proxy
+
+          docker run --rm -e LIGHTPANDA_EXPECTED="$LIGHTPANDA_EXPECTED" --entrypoint /bin/sh "$IMAGE" -euxc '
+            test "$(uname -m)" = "aarch64"
+            command -v mcp-proxy
+            for b in telegram-mcp better-telegram-mcp better-telegram-mcp-go ops-mcp bring-mcp \
+                     mcp-server-fetch curl-mcp mcp-instagram-dm zenmoney-mcp zenmoney-mcp-ddvin \
+                     one-zenwallet-mcp gocardless-mcp portainer-mcp receipts-mcp \
+                     notion-proxy-search-mcp lightpanda lightpanda-mcp; do
+              command -v "$b"
+            done
+            test "$(lightpanda version)" = "$LIGHTPANDA_EXPECTED"
+            test -w "$HOME"
+            py=/opt/uv-tools/better-telegram-mcp/bin/python
+            "$py" -c "import better_telegram_mcp, mcp.server.fastmcp"
+            /opt/telegram-mcp/.venv/bin/python -c "import telethon, mcp"
+            /usr/local/lib/portainer-mcp/portainer-mcp -h 2>&1 | grep -q -- "-disable-version-check"
+            better-telegram-mcp-go version
+            ops-mcp version
+            bring-mcp version
+            curl-mcp --version
+            receipts-mcp -version
+            notion-proxy-search-mcp version
+            head -c 8 /usr/local/lib/notion-proxy-search-mcp/model.npse | grep -q NPSE
+            test "$(stat -c%s /usr/local/lib/notion-proxy-search-mcp/model.npse)" -gt 100000000
+            for d in portainer-mcp zenmoney-mcp-ddvin one-zenwallet-mcp gocardless-mcp curl-mcp \
+                     receipts-mcp notion-proxy-search-mcp ops-mcp bring-mcp lightpanda; do
+              test -w "/var/lib/$d"
+            done
+            test -f /usr/local/lib/zenmoney-mcp-ddvin/build/index.js
+            test -f /usr/local/lib/gocardless-mcp/build/index.js
+            test -f /usr/local/lib/one-zenwallet-mcp/dist/server.js
+          '
+
+          # one-zenwallet-mcp: ESM-бандл с внешними зависимостями — `command -v`
+          # ничего не значит, поэтому гоняем настоящий MCP-handshake.
+          docker run --rm -i --entrypoint one-zenwallet-mcp "$IMAGE" > /tmp/ozw.out <<'JSONRPC' || true
+          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}
+          JSONRPC
+          grep -q '"serverInfo"' /tmp/ozw.out
+
+          # lightpanda-mcp: динамические зависимости бинарника (GLIBC_2.34) и
+          # права на /var/lib/lightpanda видны только при реальном запуске.
+          docker run --rm -i --entrypoint lightpanda-mcp "$IMAGE" > /tmp/lp.out 2> /tmp/lp.err <<'JSONRPC' || true
+          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}
+          {"jsonrpc":"2.0","method":"notifications/initialized"}
+          {"jsonrpc":"2.0","id":2,"method":"tools/list"}
+          JSONRPC
+          cat /tmp/lp.err
+          grep -q '"name":"lightpanda"' /tmp/lp.out
+          ! grep -q 'scope=telemetry' /tmp/lp.err
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        run: |
+          {
+            echo "### Опубликованный образ (linux/arm64)"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "digest: \`${{ steps.build.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
