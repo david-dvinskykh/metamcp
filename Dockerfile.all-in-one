@@ -24,6 +24,8 @@
 #   notion-proxy-search— david-dvinskykh/notion-proxy-search-mcp, Go, зеркало
 #                        Notion в SQLite с гибридным поиском (int8-эмбеддинги +
 #                        BM25); в образ кладётся и квантованный весовой блоб
+#   lex-mcp            — tggo/lex, Go: офлайн-граф законодательства Украины
+#                        (zakon.rada); датасет качается при первом старте в том
 #   metamcp-admin      — НЕ ВКЛЮЧЁН: репозиторий удалён с GitHub, см. блок ниже
 #
 # Контекст сборки не нужен — все исходники клонируются внутри.
@@ -102,6 +104,14 @@ ARG RECEIPTS_MCP_COMMIT=f5f028a6cbc7b1e7e33d51c3a647d7a56993f588
 # репозитория, как у остальных компонентов.
 ARG NOTION_PROXY_SEARCH_MCP_REPO=https://github.com/david-dvinskykh/notion-proxy-search-mcp
 ARG NOTION_PROXY_SEARCH_MCP_COMMIT=d5d7789a67e044cfafef45f294b69c00d06cc42f
+
+# tggo/lex — локальный граф связей между актами (законодательство Украины по
+# данным zakon.rada), MCP на stdio: search_laws, get_act, get_article,
+# list_amendments, find_related. Go, без cgo (modernc.org/sqlite). Релизов с
+# бинарниками нет, только датасеты — собираем из исходников по коммиту; двигает
+# пин ночной автобамп (scripts/bump_pins.py) по main репозитория.
+ARG LEX_MCP_REPO=https://github.com/tggo/lex
+ARG LEX_MCP_COMMIT=468ef7534691afb7a63e0aece660b2c20dec7017
 
 # Контрольная точка эмбеддингов, из которой собирается весовой блоб. Ревизия
 # запинена сознательно: смена модели меняет все векторы в зеркале, поэтому она
@@ -638,6 +648,32 @@ RUN set -eux; \
     test -x /out/receipts-mcp
 
 # ===========================================================================
+# lex-mcp-builder — офлайн-граф законодательства (tggo/lex), сборка на Go
+# ===========================================================================
+#
+# Тот же приём, что у curl-mcp: стадия на BUILDPLATFORM, GOARCH из TARGETARCH,
+# Go кросс-компилирует сам, cgo не нужен. go.mod требует Go 1.25.
+#
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.25-trixie AS lex-mcp-builder
+
+ARG LEX_MCP_REPO
+ARG LEX_MCP_COMMIT
+ARG TARGETARCH=""
+
+WORKDIR /src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "${LEX_MCP_REPO}"; \
+    git fetch -q --depth 1 origin "${LEX_MCP_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    if [ -n "${TARGETARCH}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -ldflags "-s -w" \
+      -o /out/lex ./cmd/lex; \
+    test -x /out/lex
+
+# ===========================================================================
 # notion-proxy-search-builder — зеркало Notion с локальным поиском + весовой блоб
 # ===========================================================================
 #
@@ -900,6 +936,21 @@ COPY --from=receipts-mcp-builder /out/receipts-mcp /usr/local/lib/receipts-mcp/r
 COPY --from=notion-proxy-search-builder /out/notion-proxy-search-mcp /usr/local/lib/notion-proxy-search-mcp/notion-proxy-search-mcp
 COPY --from=notion-proxy-search-builder /out/model.npse /usr/local/lib/notion-proxy-search-mcp/model.npse
 
+# --- lex-mcp --------------------------------------------------------------
+#
+# В конфигурации сервера в MetaMCP: команда `lex-mcp`, без аргументов.
+# Датасет (graph/ + index.fts, для ua — ~240 МБ архивом и ~880 МБ на диске) в
+# образ не кладётся: он качается из релиза tggo/lex при первом старте в
+# LEX_DATA_DIR (по умолчанию /var/lib/lex-mcp/<страна>/data, под томом).
+# Качать синхронно нельзя — рукопожатие MetaMCP отвалится по таймауту раньше,
+# чем докачается архив. Поэтому обёртка запускает загрузку отдельным процессом
+# (setsid, лог в LEX_HOME/pull.log, блокировка pull.lock, распаковка во
+# временный каталог и переименование только после успеха), ждёт до
+# LEX_PULL_WAIT секунд (по умолчанию 50) и стартует сервер с -no-pull. Не
+# успело — сервер падает с понятной ошибкой, следующий старт подхватит готовый
+# датасет. Страна — LEX_COUNTRY (по умолчанию ua).
+COPY --from=lex-mcp-builder /out/lex /usr/local/lib/lex-mcp/lex
+
 # --- lightpanda -----------------------------------------------------------
 COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpanda
 
@@ -934,8 +985,8 @@ COPY --from=lightpanda-fetcher /tmp/lightpanda /usr/local/lib/lightpanda/lightpa
 # конфигурации сервера, если телеметрию захочется вернуть.
 #
 RUN set -eux; \
-    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp/downloads /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp /var/lib/ops-mcp/devloop /var/lib/bring-mcp; \
-    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp /var/lib/ops-mcp /var/lib/bring-mcp; \
+    mkdir -p /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp/downloads /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp /var/lib/ops-mcp/devloop /var/lib/bring-mcp /var/lib/lex-mcp; \
+    chown -R 1001:1001 /var/lib/portainer-mcp /var/lib/zenmoney-mcp-ddvin /var/lib/one-zenwallet-mcp /var/lib/lightpanda /var/lib/gocardless-mcp /var/lib/curl-mcp /var/lib/receipts-mcp /var/lib/notion-proxy-search-mcp /var/lib/ops-mcp /var/lib/bring-mcp /var/lib/lex-mcp; \
     \
     printf '%s\n' \
       '#!/bin/sh' \
@@ -1004,6 +1055,26 @@ RUN set -eux; \
     printf '%s\n' \
       '#!/bin/sh' \
       'set -e' \
+      'C="${LEX_COUNTRY:-ua}"' \
+      'H="${LEX_HOME:-/var/lib/lex-mcp}"' \
+      'D="${LEX_DATA_DIR:-$H/$C/data}"' \
+      'B=/usr/local/lib/lex-mcp/lex' \
+      'mkdir -p "$H"; cd "$H"' \
+      'if [ ! -d "$D/graph" ]; then' \
+      '  find . -maxdepth 1 -name pull.lock -mmin +30 -delete' \
+      '  if [ ! -f pull.lock ]; then' \
+      '    touch pull.lock' \
+      '    T="$D.tmp"' \
+      '    (setsid sh -c "rm -rf \"$T\"; \"$B\" -data \"$T\" -country \"$C\" </dev/null && [ -d \"$T/graph\" ] && mkdir -p \"\$(dirname \"$D\")\" && mv \"$T\" \"$D\"; rm -rf \"$T\" pull.lock" >pull.log 2>&1 &)' \
+      '  fi' \
+      '  i=0; while [ ! -d "$D/graph" ] && [ "$i" -lt "${LEX_PULL_WAIT:-50}" ]; do sleep 1; i=$((i+1)); done' \
+      'fi' \
+      'exec "$B" -data "$D" -country "$C" -no-pull "$@"' \
+      > /usr/local/bin/lex-mcp; \
+    \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
       'export LIGHTPANDA_DISABLE_TELEMETRY="${LIGHTPANDA_DISABLE_TELEMETRY:-true}"' \
       'cd /var/lib/lightpanda' \
       'exec /usr/local/lib/lightpanda/lightpanda "$@"' \
@@ -1024,6 +1095,7 @@ RUN set -eux; \
       /usr/local/bin/curl-mcp \
       /usr/local/bin/receipts-mcp \
       /usr/local/bin/notion-proxy-search-mcp \
+      /usr/local/bin/lex-mcp \
       /usr/local/bin/lightpanda \
       /usr/local/bin/lightpanda-mcp
 
@@ -1055,7 +1127,7 @@ USER nextjs
 
 EXPOSE 12008
 
-VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp", "/var/lib/gocardless-mcp", "/var/lib/receipts-mcp", "/var/lib/notion-proxy-search-mcp", "/var/lib/ops-mcp"]
+VOLUME ["/var/lib/portainer-mcp", "/var/lib/zenmoney-mcp-ddvin", "/var/lib/one-zenwallet-mcp", "/var/lib/gocardless-mcp", "/var/lib/receipts-mcp", "/var/lib/notion-proxy-search-mcp", "/var/lib/ops-mcp", "/var/lib/lex-mcp"]
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:12008/health || exit 1

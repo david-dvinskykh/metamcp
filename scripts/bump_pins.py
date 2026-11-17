@@ -120,6 +120,10 @@ PINS = [
         "NOTION_PROXY_SEARCH_MCP_COMMIT",
         lambda: git_head("https://github.com/david-dvinskykh/notion-proxy-search-mcp", "refs/heads/main"),
     ),
+    Pin(
+        "LEX_MCP_COMMIT",
+        lambda: git_head("https://github.com/tggo/lex", "refs/heads/main"),
+    ),
     Pin("INSTAGRAM_DM_VERSION", lambda: npm_latest("mcp-instagram-dm")),
     Pin("ZENMONEY_NPM_VERSION", lambda: npm_latest("zenmoney-mcp")),
     # The fork is built from git, not from npm: its releases stall on the npm
