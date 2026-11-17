@@ -135,6 +135,9 @@ services:
       # состояние dev-loop'а (инбокс, аренда сессии, очередь нажатий кнопок
       # для telegram-bot-go — TELEGRAM_CALLBACK_QUEUE_FILE).
       - ops_mcp_data:/var/lib/ops-mcp
+      # lex-mcp: датасет законодательства (для ua ~880 МБ на диске). Без тома
+      # каждое автообновление образа заново качало бы ~240 МБ архива.
+      - lex_data:/var/lib/lex-mcp
     depends_on:
       postgres:
         condition: service_healthy
@@ -268,6 +271,8 @@ volumes:
   notion_proxy_search_data:
     driver: local
   ops_mcp_data:
+    driver: local
+  lex_data:
     driver: local
 
 networks:
