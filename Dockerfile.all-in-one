@@ -59,7 +59,7 @@ ARG PNPM_VERSION=10.29.3
 # chigwell/telegram-mcp @ main на 2026-07-27 12:47 (PR #168, exposed-tools-allowlist).
 # У ветки нет тегов и она активно движется — без пина пересборка молча меняет
 # версию сервера.
-ARG TELEGRAM_MCP_COMMIT=519899cca9c02ac2886902412975bc0a1cccc4ce
+ARG TELEGRAM_MCP_COMMIT=8941396455bb06a40bdb6aedd511ac570e0df99e
 
 # david-dvinskykh/better-telegram-mcp — форк, а не PyPI-релиз n24q02m: именно
 # его звал конфиг сервера в MetaMCP (`uvx --from git+...@main`), и в нём есть
@@ -79,7 +79,7 @@ ARG BETTER_TELEGRAM_MCP_COMMIT=39f9eed045aae126a47c7a8f700d09341726abbe
 # конфиг сервера в MetaMCP звал готовую консольную команду вместо `uvx`.
 # Собственная зависимость пакета — mcp<2,>=1.29.0, отдельный `--with "mcp<2"`
 # ей не нужен.
-ARG MCP_SERVER_FETCH_VERSION=2026.11.18
+ARG MCP_SERVER_FETCH_VERSION=2026.11.27
 
 # curl-mcp — обёртка над самим бинарником curl: mcp-server-fetch умеет только
 # GET со сведением страницы в markdown, а этот сервер даёт POST, PUT, PATCH,
@@ -150,7 +150,7 @@ ARG PORTAINER_MCP_VERSION=0.7.0
 # (`lightpanda mcp`, stdio по умолчанию). 0.3.7 @ 2026-08-16 — последний
 # нумерованный релиз; тег nightly брать нельзя, он переписывается и образ
 # перестаёт быть воспроизводимым.
-ARG LIGHTPANDA_VERSION=1.0.5
+ARG LIGHTPANDA_VERSION=1.0.6
 
 # ===========================================================================
 # base — как в апстриме: uv + Node 20 + pnpm
@@ -333,8 +333,8 @@ ARG LIGHTPANDA_VERSION
 ARG TARGETARCH=""
 
 # SHA256 бинарников релиза 0.3.7, проверены вручную 2026-08-26.
-ARG SHA256_AMD64=0ec21fa4867ab9e82b35285ff4ab0e7336c6c1d89f26fe991f27d73c8a678bd7
-ARG SHA256_ARM64=7527391c479f323eb9111b834b012d91a89057528c28ef027741b21739b12299
+ARG SHA256_AMD64=a9bff4c0b8498433cd16d8165a5e5b47181e5690d4c8e1f011d601f1f2e8a467
+ARG SHA256_ARM64=26e0042a52f493d8cc1b04faef42aea9b46bef9ccfcc86170098bd330c19a890
 
 # Запуск скачанного бинарника проверяем только при нативной сборке: при
 # кросс-сборке в файле чужой ELF и exec падает на «Exec format error».
